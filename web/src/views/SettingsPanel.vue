@@ -231,7 +231,13 @@ async function doCheck() {
   checking.value = true
   checkMsg.value = ''
   try {
-    const res = await api.checkSettings()
+    // 把当前 form 草稿带给后端：未保存的输入也能直接测试。
+    // 空字段后端会回退到已保存值（保持兼容：未改任何东西也能测当前配置）。
+    const draft: Record<string, string> = {}
+    if (form.llm_api_key && form.llm_api_key !== '__CLEAR__') draft.llm_api_key = form.llm_api_key
+    if (form.llm_base_url) draft.llm_base_url = form.llm_base_url
+    if (form.llm_model) draft.llm_model = form.llm_model
+    const res = await api.checkSettings(draft)
     if (res.ok) {
       checkMsg.value = t('settings.checkPassed', { model: res.model || '' })
       checkOk.value = true

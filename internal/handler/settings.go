@@ -98,30 +98,52 @@ func UpdateSettings(c *gin.Context) {
 	GetSettings(c)
 }
 
-// CheckSettings 测试当前 LLM 配置能否通：实际跑一次 mini chat completion。
+// CheckSettings 测试 LLM 配置能否通：实际跑一次 mini chat completion。
 // 用于设置页的"测试连接"按钮。
+//
+// 接收一个可选 body（与 SettingsPatch 同结构），让用户**未保存的草稿**也能直接测试：
+//   - body 字段非空 → 用草稿值
+//   - body 字段为空 / 没传 body → fallback 到 config.Snapshot()
+//   - body 中 LLMApiKey == "__CLEAR__" 视为未提供
+// 测试**不持久化**，纯瞬时验证。
 //
 // 不依赖 OpenKB / Python，直接 HTTP 调 base_url + chat/completions（OpenAI 兼容协议）。
 // 大多数厂商（OpenAI/DeepSeek/Anthropic via proxy/Mistral/...）都支持这个端点。
 // 失败的话返回详细错误信息让用户排查。
 func CheckSettings(c *gin.Context) {
-	cfg := config.Snapshot()
-	if cfg.LLMApiKey == "" {
+	saved := config.Snapshot()
+
+	// body 是可选的（旧调用方不带 body 传空 {} 也兼容）。
+	// 解析失败不报错——直接当作未传草稿。
+	var draft SettingsPatch
+	if c.Request.ContentLength > 0 {
+		_ = c.ShouldBindJSON(&draft)
+	}
+
+	// 字段合并：草稿优先，回退到已保存值
+	apiKey := saved.LLMApiKey
+	if draft.LLMApiKey != "" && draft.LLMApiKey != "__CLEAR__" {
+		apiKey = draft.LLMApiKey
+	}
+	baseURL := pickStr(draft.LLMBaseURL, saved.LLMBaseURL)
+	rawModel := pickStr(draft.LLMModel, saved.LLMModel)
+
+	if apiKey == "" {
 		c.JSON(http.StatusOK, gin.H{"ok": false, "error": "未配置 API key"})
 		return
 	}
-	if cfg.LLMBaseURL == "" {
+	if baseURL == "" {
 		c.JSON(http.StatusOK, gin.H{"ok": false, "error": "未配置 Base URL"})
 		return
 	}
 
 	// model 名字可能带 provider 前缀（"deepseek/deepseek-chat"），调实际 API 时要剥掉
-	model := cfg.LLMModel
+	model := rawModel
 	if i := strings.LastIndex(model, "/"); i >= 0 {
 		model = model[i+1:]
 	}
 
-	endpoint := strings.TrimRight(cfg.LLMBaseURL, "/") + "/v1/chat/completions"
+	endpoint := strings.TrimRight(baseURL, "/") + "/v1/chat/completions"
 	body := map[string]any{
 		"model": model,
 		"messages": []map[string]string{
@@ -140,7 +162,7 @@ func CheckSettings(c *gin.Context) {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+cfg.LLMApiKey)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -162,6 +184,14 @@ func CheckSettings(c *gin.Context) {
 		"status": resp.StatusCode,
 		"error":  fmt.Sprintf("HTTP %d: %s", resp.StatusCode, truncate(string(respBody), 400)),
 	})
+}
+
+// pickStr 草稿优先，空则回退保存值。
+func pickStr(draft, saved string) string {
+	if strings.TrimSpace(draft) != "" {
+		return draft
+	}
+	return saved
 }
 
 // maskKey 返回 sk-***xxxx 格式（保留前 3 + 后 4 个字符）。

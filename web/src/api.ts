@@ -101,9 +101,9 @@ export const api = {
       llm_base_url: string
       llm_model: string
     }>('/api/settings', 'POST', patch),
-  checkSettings: () =>
+  checkSettings: (draft?: Record<string, string>) =>
     request<{ ok: boolean; status?: number; model?: string; error?: string }>(
-      '/api/settings/check', 'POST', {},
+      '/api/settings/check', 'POST', draft || {},
     ),
 
   // Bootstrap 进度：启动时轮询（每 1s）直到 ready 或 failed
