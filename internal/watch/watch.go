@@ -123,29 +123,47 @@ func (m *Manager) isIgnored(path string) bool {
 // EnsureSpace 保证给定 space 的 raw/ 已经在监听。已存在则 no-op。
 //
 // raw/ 目录如果还不存在就先 mkdir（新 space 在 OpenKB init 之前可能没 raw）。
+//
+// reconcile=true 时会对当前 raw/ 下所有文件 spawn 一次 `openkb add`：
+// 用于进程启动时补漏——程序关闭期间用户往 raw/ 里塞的文件，靠 fsnotify
+// 是听不到的。openkb add 内部按 hash 去重，已编译过的文件 skip 几乎 0 开销。
+//
+// CreateSpace 路径不需要 reconcile（新 space raw/ 必为空）。
 func (m *Manager) EnsureSpace(spaceDir string) error {
+	return m.ensureSpace(spaceDir, false)
+}
+
+// EnsureSpaceWithReconcile 同 EnsureSpace 但启动时调用一次。
+func (m *Manager) EnsureSpaceWithReconcile(spaceDir string) error {
+	return m.ensureSpace(spaceDir, true)
+}
+
+func (m *Manager) ensureSpace(spaceDir string, reconcile bool) error {
 	abs, err := filepath.Abs(spaceDir)
 	if err != nil {
 		return err
 	}
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if _, ok := m.watchers[abs]; ok {
+		m.mu.Unlock()
 		return nil
 	}
 
 	rawDir := filepath.Join(abs, "raw")
 	if err := os.MkdirAll(rawDir, 0o755); err != nil {
+		m.mu.Unlock()
 		return fmt.Errorf("mkdir raw: %w", err)
 	}
 
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
+		m.mu.Unlock()
 		return fmt.Errorf("new fsnotify watcher: %w", err)
 	}
 	if err := w.Add(rawDir); err != nil {
 		w.Close()
+		m.mu.Unlock()
 		return fmt.Errorf("watch raw dir: %w", err)
 	}
 
@@ -159,10 +177,47 @@ func (m *Manager) EnsureSpace(spaceDir string) error {
 		stop:     make(chan struct{}),
 	}
 	m.watchers[abs] = sw
+	m.mu.Unlock()
 
 	go sw.run()
 	log.Printf("👁  watch raw/: %s", rawDir)
+
+	if reconcile {
+		// 异步扫一遍，避免阻塞 bootstrapWatchers 启动；
+		// spawnAdd 内部已经是 goroutine + task 队列，前端能看到"自动编译"。
+		go sw.reconcileExistingFiles()
+	}
 	return nil
+}
+
+// reconcileExistingFiles 扫 raw/ 当前所有文件，对每个非临时文件 spawn `openkb add`。
+// 仅在进程启动时跑（程序关闭期间用户可能新增/修改了 raw/ 文件）。
+//
+// openkb add 内部按文件 hash 去重：已编译过的文件 skip，仅未编译/已变更的真正走流程。
+// 跳过隐藏文件 / 临时文件（与 watcher 主流程的过滤策略保持一致）。
+func (sw *spaceWatcher) reconcileExistingFiles() {
+	entries, err := os.ReadDir(sw.rawDir)
+	if err != nil {
+		return
+	}
+	count := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if shouldSkipFilename(name) {
+			continue
+		}
+		path := filepath.Join(sw.rawDir, name)
+		// 同 watcher 主流程：spawnAdd 走 task 队列，前端可见。
+		// 多文件并发 add 会被 OpenKB 自身锁/串行化 —— 我们简单全推过去。
+		sw.spawnAdd(path)
+		count++
+	}
+	if count > 0 {
+		log.Printf("🔄 reconcile %s: 触发 %d 个文件的去重 add", sw.rawDir, count)
+	}
 }
 
 // RemoveSpace 停止某 space 的 watcher（用于删除 space 时清理）。
@@ -234,15 +289,8 @@ func (sw *spaceWatcher) shouldHandle(ev fsnotify.Event) bool {
 	if sw.mgr.isIgnored(ev.Name) {
 		return false
 	}
-	base := filepath.Base(ev.Name)
-	if base == "" || strings.HasPrefix(base, ".") {
+	if shouldSkipFilename(filepath.Base(ev.Name)) {
 		return false
-	}
-	// 编辑器/下载工具的临时文件后缀
-	for _, suf := range []string{".tmp", ".swp", ".swx", ".part", ".partial", ".crdownload", "~"} {
-		if strings.HasSuffix(base, suf) {
-			return false
-		}
 	}
 	// Chmod 单独事件不动作（数据没变）
 	if ev.Op == fsnotify.Chmod {
@@ -255,6 +303,20 @@ func (sw *spaceWatcher) shouldHandle(ev fsnotify.Event) bool {
 		}
 	}
 	return true
+}
+
+// shouldSkipFilename 判定一个 basename 是否该被跳过：
+// dotfiles（.DS_Store / .git*）和编辑器/下载工具的临时文件后缀。
+func shouldSkipFilename(base string) bool {
+	if base == "" || strings.HasPrefix(base, ".") {
+		return true
+	}
+	for _, suf := range []string{".tmp", ".swp", ".swx", ".part", ".partial", ".crdownload", "~"} {
+		if strings.HasSuffix(base, suf) {
+			return true
+		}
+	}
+	return false
 }
 
 // scheduleDebounced 为该 path 重置/新建 timer；记录"最近一次 op"用于触发时决定 add/remove。

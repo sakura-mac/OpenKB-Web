@@ -144,7 +144,9 @@ func bootstrapWatchers(wm *watch.Manager) {
 		if _, err := os.Stat(filepath.Join(spaceDir, ".openkb")); err != nil {
 			continue
 		}
-		if err := wm.EnsureSpace(spaceDir); err != nil {
+		// 启动时挂 watcher 并扫一遍 raw/：程序关闭期间用户往 raw/ 塞的文件
+		// 靠 fsnotify 听不到，靠 reconcile 让 OpenKB 按 hash 去重再 add 一次
+		if err := wm.EnsureSpaceWithReconcile(spaceDir); err != nil {
 			log.Printf("⚠️  watch 启动失败 [%s]: %v", spaceDir, err)
 		}
 	}
