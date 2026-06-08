@@ -31,29 +31,39 @@ Go (Gin) 后端 + Vue 3 (Vite + TypeScript) 前端，前端编译后通过 `go:e
 
 ### 方式一：下载预编译二进制（推荐）
 
-到 **[Releases](https://github.com/sakura-mac/OpenKB-Web/releases/latest)** 下载对应平台压缩包：
+到 **[Releases](https://github.com/sakura-mac/OpenKB-Web/releases/latest)** 下载对应平台：
 
-| 平台 | 文件 |
-|---|---|
-| macOS Apple Silicon (M1/M2/M3) | `OpenKB-Web-vX.Y.Z-darwin-arm64.tar.gz` |
-| macOS Intel | `OpenKB-Web-vX.Y.Z-darwin-amd64.tar.gz` |
-| Windows x64 | `OpenKB-Web-vX.Y.Z-windows-amd64.zip` |
-| Linux x64 | `OpenKB-Web-vX.Y.Z-linux-amd64.tar.gz` |
-| Linux ARM64 | `OpenKB-Web-vX.Y.Z-linux-arm64.tar.gz` |
+| 平台 | 推荐 | 备选（便携，免安装） |
+|---|---|---|
+| **Windows x64** | `OpenKB-Web-Setup-vX.Y.Z.exe`（**双击安装器**，进开始菜单） | `OpenKB-Web-vX.Y.Z-windows-amd64.zip`（解压即跑） |
+| macOS Apple Silicon | `OpenKB-Web-vX.Y.Z-darwin-arm64.tar.gz` | — |
+| macOS Intel | `OpenKB-Web-vX.Y.Z-darwin-amd64.tar.gz` | — |
+| Linux x64 | `OpenKB-Web-vX.Y.Z-linux-amd64.tar.gz` | — |
+| Linux ARM64 | `OpenKB-Web-vX.Y.Z-linux-arm64.tar.gz` | — |
+
+#### Windows（推荐：Setup 安装器）
+
+1. 下载 `OpenKB-Web-Setup-vX.Y.Z.exe`，双击运行
+2. SmartScreen 警告：点「**更多信息**」→「**仍要运行**」（首次必须，因未购买代码签名证书）
+3. 一路下一步装到 `%LocalAppData%\Programs\OpenKB-Web`（用户级，不需管理员）
+4. 开始菜单 → **OpenKB Web** 启动 → 自动开浏览器到 http://localhost:8901
+5. 卸载：控制面板「程序和功能」→ OpenKB Web → 卸载（程序文件清干净，笔记数据保留）
+
+#### Windows（便携版：zip）
+
+```powershell
+Expand-Archive OpenKB-Web-*-windows-amd64.zip
+cd OpenKB-Web-*
+.\okb-web.exe
+```
+
+#### macOS / Linux
 
 ```bash
-# macOS / Linux
 tar -xzf OpenKB-Web-*-darwin-arm64.tar.gz
 cd OpenKB-Web-*
 ./okb-web
 # macOS 首次运行如被 Gatekeeper 拦截：xattr -d com.apple.quarantine ./okb-web
-```
-
-```powershell
-# Windows
-Expand-Archive OpenKB-Web-*-windows-amd64.zip
-cd OpenKB-Web-*
-.\okb-web.exe
 ```
 
 启动后浏览器打开 http://localhost:8901，首次会自动下载 uv 并安装 OpenKB（约 1-2 分钟）。在 Web 设置页填入 LLM API Key 即可使用。

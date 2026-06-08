@@ -87,6 +87,37 @@ jobs:
           fi
           ls -lh
 
+      # Windows 专属：用 Inno Setup 在 zip 之外多产一份 Setup.exe 安装器
+      # zip 给"会用命令行/便携派"，Setup.exe 给"双击安装派"，并存
+      - name: Build Windows installer (Inno Setup)
+        if: matrix.os_name == 'windows'
+        shell: pwsh
+        run: |
+          $version = "$env:GITHUB_REF_NAME"
+          if ([string]::IsNullOrEmpty($version)) { $version = "dev" }
+          $pkgName = "OpenKB-Web-$version-windows-amd64"
+          $sourceDir = (Resolve-Path "dist\$pkgName").Path
+
+          # SVG → ICO（windows-latest runner 自带 ImageMagick）
+          # 多尺寸 ICO 让任务栏/开始菜单/explorer 不同上下文都清晰
+          magick convert -background none -density 384 web\public\favicon.svg `
+            -define icon:auto-resize=256,128,64,48,32,16 installer\icon.ico
+
+          # Inno Setup 6 在 windows-latest runner 预装在 'C:\Program Files (x86)\Inno Setup 6\'
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            Write-Host "Inno Setup 未预装，从 Chocolatey 装一份..."
+            choco install -y --no-progress innosetup
+            $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          }
+
+          & $iscc "/DAppVersion=$version" "/DSourceDir=$sourceDir" "installer\windows.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup 编译失败 (exit $LASTEXITCODE)" }
+
+          # Inno 输出在 OutputDir=. 下，移到 dist/ 与其它产物并放
+          Move-Item "installer\OpenKB-Web-Setup-$version.exe" "dist\"
+          Get-ChildItem dist | Format-Table Name, Length
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -94,6 +125,7 @@ jobs:
           path: |
             dist/*.tar.gz
             dist/*.zip
+            dist/*.exe
           if-no-files-found: error
           retention-days: 7
 
@@ -112,13 +144,13 @@ jobs:
 
       - name: List artifacts
         run: |
-          find artifacts -type f -name '*.tar.gz' -o -name '*.zip' | sort
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.exe' \) | sort
           ls -lhR artifacts
 
       - name: Generate checksums
         run: |
           cd artifacts
-          find . -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec sha256sum {} \; \
+          find . -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.exe' \) -exec sha256sum {} \; \
             | sed 's|\./[^/]*/||' > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
@@ -133,6 +165,7 @@ jobs:
           files: |
             artifacts/**/*.tar.gz
             artifacts/**/*.zip
+            artifacts/**/*.exe
             artifacts/SHA256SUMS.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

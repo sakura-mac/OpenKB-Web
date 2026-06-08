@@ -44,3 +44,7 @@ Thumbs.db
 
 # Python embed 解压缓存
 runtime/
+
+# Inno Setup 产物（icon.ico 由 CI 从 favicon.svg 转出，setup.exe 由 release.yml 上传）
+/installer/icon.ico
+/installer/*.exe
