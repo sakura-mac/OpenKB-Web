@@ -57,8 +57,10 @@ UninstallDisplayName={#AppName}
 ChangesAssociations=no
 
 [Languages]
+; 只用英文。简体中文 ChineseSimplified.isl 不在 Inno Setup 6 核心包里
+; （社区翻译，需单独下载），先省了——安装向导文字简单（Next/Install/Cancel），
+; 且 OpenKB Web 程序自身界面是 i18n（中英自动切换）。
 Name: "english"; MessagesFile: "compiler:Default.isl"
-Name: "chinese"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
