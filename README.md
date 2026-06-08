@@ -174,6 +174,101 @@ LLM_LANGUAGE=zh
 
 ---
 
+## 🗑️ 卸载
+
+每个 release 包内自带 `uninstall.sh`（macOS/Linux）或 `uninstall.bat`（Windows）。运行后会交互式询问卸载方式：
+
+| 模式 | 删除 | 保留 |
+|---|---|---|
+| **温柔卸载（推荐）** | runtime + cache（约 200MB，可重新下载） | spaces（笔记） + config（API key） |
+| **彻底卸载** | 全部 OKB 数据 | — |
+
+### macOS / Linux
+
+```bash
+cd OpenKB-Web-v0.1.0-darwin-arm64
+./uninstall.sh
+
+# 或非交互
+./uninstall.sh --keep --yes    # 温柔
+./uninstall.sh --purge --yes   # 彻底（含笔记，慎用）
+```
+
+### Windows
+
+```cmd
+cd OpenKB-Web-v0.1.0-windows-amd64
+uninstall.bat
+
+REM 或非交互
+uninstall.bat /keep /yes
+uninstall.bat /purge /yes
+```
+
+### OKB Web 数据存哪？
+
+| 平台 | 路径 |
+|---|---|
+| macOS | `~/Library/Application Support/OKB/` |
+| Linux | `~/.config/OKB/` |
+| Windows | `%AppData%\OKB\` |
+
+目录结构：
+
+```
+OKB/
+├── config.json         # LLM 配置（API key 在这）
+├── spaces/             # 你的所有知识库
+├── runtime/            # uv + OpenKB Python 环境（约 200MB，可重装）
+└── cache/              # chat_helper.py + skills（可重装）
+```
+
+OKB Web **不污染系统**：不写注册表、不改 PATH、不进 `/usr/local/`、不开机自启、不碰系统 Python。卸载脚本删完之后零残留。
+
+---
+
+## ❓ 常见问题
+
+**Q: macOS 双击/运行报「无法打开，因为它来自身份不明的开发者」**
+
+```bash
+# 解 Gatekeeper 隔离（一次即可）
+xattr -d com.apple.quarantine ./okb-web
+```
+
+或：系统设置 → 隐私与安全 → 滑到底「已阻止 okb-web」→ 仍要打开。
+
+**Q: 进度遮罩卡在「下载运行时」很久**
+
+国内网络拉 GitHub Releases 慢。设置代理后重启：
+
+```bash
+export HTTPS_PROXY=http://127.0.0.1:7890   # 改成你的代理端口
+./okb-web
+```
+
+**Q: 端口 8901 被占用**
+
+```bash
+PORT=9000 ./okb-web      # 换端口
+# 或
+lsof -ti:8901 | xargs kill   # 杀占用进程
+```
+
+**Q: 想后台跑**
+
+```bash
+nohup ./okb-web > okb.log 2>&1 &
+```
+
+**Q: 想用自定义数据目录**
+
+```bash
+OKB_HOME=/path/to/custom ./okb-web
+```
+
+---
+
 ## 📡 API 参考
 
 ### 空间

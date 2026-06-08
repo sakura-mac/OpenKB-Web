@@ -72,6 +72,13 @@ jobs:
           mkdir -p "dist/${PKG_NAME}"
           cp "okb-web${{ matrix.ext }}" "dist/${PKG_NAME}/"
           cp README.md LICENSE .env.example "dist/${PKG_NAME}/" 2>/dev/null || true
+          # 卸载脚本：windows 用 .bat，其它平台用 .sh
+          if [[ "${{ matrix.os_name }}" == "windows" ]]; then
+            cp scripts/uninstall.bat "dist/${PKG_NAME}/"
+          else
+            cp scripts/uninstall.sh "dist/${PKG_NAME}/"
+            chmod +x "dist/${PKG_NAME}/uninstall.sh"
+          fi
           cd dist
           if [[ "${{ matrix.os_name }}" == "windows" ]]; then
             7z a -tzip "${PKG_NAME}.zip" "${PKG_NAME}"
