@@ -14,6 +14,11 @@
       <div class="bs-eyebrow">{{ t('bootstrap.eyebrow') }}</div>
       <h1 class="bs-title">{{ t('bootstrap.title') }}</h1>
 
+      <!-- 首次启动预告：在所有流程开始就显示，避免用户疑惑"卡住没？" -->
+      <p v-if="phase !== 'failed'" class="bs-firstrun">
+        {{ t('bootstrap.firstRunHint') }}
+      </p>
+
       <div v-if="phase !== 'failed'" class="bs-progress-wrap">
         <div class="bs-progress-track">
           <div
@@ -30,6 +35,11 @@
           <span></span><span></span><span></span>
         </span>
         <span class="bs-message-text">{{ message }}</span>
+      </p>
+
+      <!-- 计时器：让用户感知"程序在动"，超过预期时间不焦虑 -->
+      <p v-if="phase !== 'failed'" class="bs-timer">
+        {{ t('bootstrap.readyHint') }} · {{ formatElapsed(elapsed) }}
       </p>
 
       <div v-if="phase === 'failed'" class="bs-failed-actions">
@@ -67,14 +77,24 @@ const progress = ref(0)
 const error = ref('')
 const startedAt = ref<number>(Date.now())
 const retrying = ref(false)
+const elapsed = ref(0)  // 每秒由 tick 更新（computed 不会自刷，必须手动推）
 
 // 1s 间隔轮询。ready/failed 后停。
 let timer: number | null = null
 
 const visible = computed(() => phase.value !== 'ready')
-const elapsed = computed(() => Math.floor((Date.now() - startedAt.value) / 1000))
+
+// formatElapsed 把秒数转成 "12s" / "1m23s"，对超过 1 分钟的更直观
+function formatElapsed(secs: number): string {
+  if (secs < 60) return `${secs}s`
+  const m = Math.floor(secs / 60)
+  const s = secs % 60
+  return `${m}m${String(s).padStart(2, '0')}s`
+}
 
 async function tick() {
+  // 先更新计时（即使后端响应慢/失败也要往前走）
+  elapsed.value = Math.floor((Date.now() - startedAt.value) / 1000)
   try {
     const res = await api.bootstrapStatus()
     phase.value = res.phase
@@ -128,6 +148,7 @@ async function retry() {
     phase.value = 'pending'
     progress.value = 0
     startedAt.value = Date.now()
+    elapsed.value = 0
     start()
   } catch (e: any) {
     error.value = e?.message || String(e)
@@ -183,8 +204,31 @@ onUnmounted(stop)
   font-weight: 500;
   letter-spacing: -0.015em;
   color: var(--ink);
-  margin-bottom: 28px;
+  margin-bottom: 16px;
   font-variation-settings: "opsz" 60, "SOFT" 30;
+}
+
+/* 首次启动预告：在 title 下方，让用户预期到"会比较久" */
+.bs-firstrun {
+  font-family: var(--font-body);
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--ink-3);
+  max-width: 480px;
+  margin: 0 auto 24px;
+  padding: 12px 16px;
+  background: var(--paper-2);
+  border-left: 2px solid var(--vermilion);
+  text-align: left;
+}
+
+/* 计时器 + 'ready 后会自动开浏览器'提示 */
+.bs-timer {
+  margin-top: 14px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
+  color: var(--ink-4);
 }
 
 /* 进度条：墨色细轨道 + 朱红填充 + 顶部流光 */

@@ -104,6 +104,23 @@ func main() {
 	addr := "0.0.0.0:" + config.C.Port
 	log.Printf("🚀 OKB Web 启动: http://localhost:%s", config.C.Port)
 	log.Printf("📁 空间目录: %s", config.C.SpacesRoot)
+
+	// 启动后自动打开浏览器（桌面用户）。OKB_NO_BROWSER=1 可禁用（远程/headless 部署）。
+	// 异步等端口就绪再 open，避免 HTTP 还没起来浏览器先打开看到"无法连接"。
+	if os.Getenv("OKB_NO_BROWSER") == "" {
+		go func() {
+			if !waitPortReady(config.C.Port, 5*time.Second) {
+				log.Printf("⚠️  端口 %s 未在 5s 内就绪，跳过自动打开浏览器", config.C.Port)
+				return
+			}
+			url := "http://localhost:" + config.C.Port
+			log.Printf("🌐 自动打开浏览器: %s", url)
+			if err := openBrowser(url); err != nil {
+				log.Printf("   （未能打开浏览器：%v；请手动访问上面的地址）", err)
+			}
+		}()
+	}
+
 	r.Run(addr)
 }
 
