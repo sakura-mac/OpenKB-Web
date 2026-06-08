@@ -36,10 +36,11 @@ Go (Gin) 后端 + Vue 3 (Vite + TypeScript) 前端，前端编译后通过 `go:e
 | 平台 | 推荐 | 备选（便携，免安装） |
 |---|---|---|
 | **Windows x64** | `OpenKB-Web-Setup-vX.Y.Z.exe`（**双击安装器**，进开始菜单） | `OpenKB-Web-vX.Y.Z-windows-amd64.zip`（解压即跑） |
-| macOS Apple Silicon | `OpenKB-Web-vX.Y.Z-darwin-arm64.tar.gz` | — |
-| macOS Intel | `OpenKB-Web-vX.Y.Z-darwin-amd64.tar.gz` | — |
+| macOS Apple Silicon (M1+) | `OpenKB-Web-vX.Y.Z-darwin-arm64.tar.gz` | — |
 | Linux x64 | `OpenKB-Web-vX.Y.Z-linux-amd64.tar.gz` | — |
 | Linux ARM64 | `OpenKB-Web-vX.Y.Z-linux-arm64.tar.gz` | — |
+
+> Intel Mac / 其它架构请走 [方式二：从源码编译](#方式二从源码编译)。
 
 #### Windows（推荐：Setup 安装器）
 
