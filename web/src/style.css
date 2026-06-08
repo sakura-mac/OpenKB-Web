@@ -1,0 +1,495 @@
+/* =============================================================
+ * OKB Knowledge Workshop — editorial / paper-and-ink aesthetic
+ * Inspired by: NYT digital, working notebooks, the editing room.
+ * ============================================================= */
+
+:root {
+  /* paper / ink */
+  --paper:        #f5f0e6;      /* warm cream, like old book page */
+  --paper-2:      #ebe4d4;      /* slightly darker cream for surfaces */
+  --paper-edge:   #d9cfb7;      /* visible "fold" line */
+  --ink:          #1a1814;      /* warm-tinted near-black */
+  --ink-2:        #3a342c;      /* secondary text */
+  --ink-3:        #5d574d;      /* muted, captions */
+  --ink-4:        #8a8377;      /* very muted, metadata */
+
+  /* accents — used VERY sparingly */
+  --vermilion:    #c8302e;      /* the one bold color: alerts, current section, danger */
+  --vermilion-2:  #a02825;
+  --indigo:       #2d4a6b;      /* links, concepts, navigation */
+  --indigo-2:     #1e3550;
+  --moss:         #5b6f3f;      /* success, completed */
+
+  /* typography */
+  --font-display: 'Fraunces', 'Times New Roman', serif;
+  --font-body:    'IBM Plex Sans', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono:    'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
+
+  /* dimensions */
+  --rule:         1px;
+  --measure:      72ch;          /* ideal reading column width */
+}
+
+/* ---------- Reset & base ---------- */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+*::selection { background: var(--ink); color: var(--paper); }
+
+html, body {
+  height: 100%;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--ink);
+  background: var(--paper);
+  /* very subtle paper grain — barely perceptible noise, gives surface "tooth" */
+  background-image:
+    radial-gradient(at 25% 30%, rgba(0,0,0,0.018) 0, transparent 40%),
+    radial-gradient(at 80% 70%, rgba(200,48,46,0.025) 0, transparent 40%);
+  font-feature-settings: "kern" 1, "liga" 1, "calt" 1;
+}
+
+.app { display: flex; height: 100vh; overflow: hidden; }
+
+/* =================================================================
+ * Typography primitives — used everywhere
+ * ================================================================= */
+
+.display {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-variation-settings: "opsz" 100, "SOFT" 30;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+  color: var(--ink);
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+}
+
+.smallcaps {
+  font-variant-caps: all-small-caps;
+  letter-spacing: 0.08em;
+  font-weight: 500;
+}
+
+.rule {
+  border: 0;
+  border-top: var(--rule) solid var(--paper-edge);
+}
+
+/* =================================================================
+ * Buttons — minimal, no boxes by default. They are LINKS that act.
+ * ================================================================= */
+
+.btn {
+  appearance: none;
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  padding: 7px 14px;
+  border-radius: 0;                        /* sharp corners — not rounded */
+  border: var(--rule) solid var(--ink);
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  display: inline-flex; align-items: center; gap: 8px;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease, transform 120ms ease;
+  position: relative;
+}
+.btn:hover { background: var(--ink); color: var(--paper); }
+.btn:active { transform: translateY(1px); }
+.btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.btn:disabled:hover { background: transparent; color: var(--ink); }
+
+.btn-primary { background: var(--ink); color: var(--paper); }
+.btn-primary:hover { background: var(--vermilion); border-color: var(--vermilion); color: var(--paper); }
+
+.btn-danger { border-color: var(--vermilion); color: var(--vermilion); }
+.btn-danger:hover { background: var(--vermilion); color: var(--paper); }
+
+.btn-ghost {
+  border-color: transparent;
+  color: var(--ink-3);
+  padding-left: 8px; padding-right: 8px;
+}
+.btn-ghost:hover { background: transparent; color: var(--vermilion); border-color: transparent; }
+
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+
+/* =================================================================
+ * Inputs — flat, underlined; no rounded "Material" boxes
+ * ================================================================= */
+
+input[type="text"],
+input[type="search"],
+textarea {
+  width: 100%;
+  font-family: var(--font-body);
+  font-size: 14px;
+  color: var(--ink);
+  background: transparent;
+  border: 0;
+  border-bottom: 1.5px solid var(--ink-4);
+  border-radius: 0;
+  padding: 8px 0;
+  outline: none;
+  transition: border-color 150ms ease;
+}
+input[type="text"]:focus,
+input[type="search"]:focus,
+textarea:focus { border-bottom-color: var(--ink); }
+input[type="text"]::placeholder,
+textarea::placeholder { color: var(--ink-4); font-style: italic; }
+textarea {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  resize: vertical;
+  border: 1.5px solid var(--paper-edge);
+  padding: 12px 14px;
+  background: rgba(255,255,255,0.4);
+}
+textarea:focus { border-color: var(--ink); }
+
+/* =================================================================
+ * Card — a sheet of paper with a faint shadow. No rounded.
+ * ================================================================= */
+
+.card {
+  background: rgba(255, 252, 244, 0.65);
+  border: var(--rule) solid var(--paper-edge);
+  padding: 24px 28px;
+  margin-bottom: 16px;
+  position: relative;
+}
+
+/* =================================================================
+ * Tag — like a margin annotation
+ * ================================================================= */
+
+.tag {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  padding: 3px 8px 4px;
+  margin: 3px 4px 3px 0;
+  background: transparent;
+  color: var(--ink-2);
+  border: 1px solid var(--paper-edge);
+  cursor: pointer;
+  transition: all 130ms ease;
+  border-radius: 0;
+}
+.tag:hover {
+  border-color: var(--ink);
+  color: var(--ink);
+  background: var(--paper-2);
+}
+
+/* =================================================================
+ * Scrollbar — almost invisible
+ * ================================================================= */
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--paper-edge); border-radius: 0; }
+::-webkit-scrollbar-thumb:hover { background: var(--ink-4); }
+
+/* =================================================================
+ * Markdown content — designed to be READ
+ * ================================================================= */
+
+.md-content {
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.75;
+  max-width: var(--measure);
+  color: var(--ink);
+}
+.md-content > * + * { margin-top: 0.7em; }
+.md-content h1, .md-content h2, .md-content h3, .md-content h4 {
+  font-family: var(--font-display);
+  font-weight: 500;
+  letter-spacing: -0.015em;
+  line-height: 1.15;
+  color: var(--ink);
+  font-variation-settings: "opsz" 60, "SOFT" 30;
+}
+.md-content h1 { font-size: 2.0em; margin: 1.2em 0 0.4em; font-weight: 400; }
+.md-content h2 { font-size: 1.45em; margin: 1.5em 0 0.4em; }
+.md-content h2::before {
+  content: "§ ";
+  color: var(--vermilion);
+  font-family: var(--font-display);
+  font-weight: 500;
+}
+.md-content h3 { font-size: 1.18em; margin: 1.2em 0 0.3em; }
+.md-content p { margin: 0.7em 0; }
+.md-content ul, .md-content ol { padding-left: 1.5em; margin: 0.6em 0; }
+.md-content li { margin-bottom: 0.2em; }
+.md-content code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  background: var(--paper-2);
+  padding: 1px 5px;
+  color: var(--ink);
+  border-radius: 0;
+}
+.md-content pre {
+  background: var(--ink);
+  color: #e6e2d8;
+  padding: 18px 22px;
+  margin: 1em 0;
+  overflow-x: auto;
+  border-radius: 0;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.md-content pre code {
+  background: none; padding: 0; color: inherit;
+}
+
+/* =================================================================
+ * 代码块外壳 .code-block — 由 markdown.ts 自定义 renderer 产出
+ *
+ * 结构：
+ *   <div class="code-block">
+ *     <div class="code-block-head"><span class="code-lang">python</span><button class="code-copy-btn"…/></div>
+ *     <pre><code class="hljs language-python">…</code></pre>
+ *   </div>
+ *
+ * 顶部 head 是一条窄黑条，左侧显示语言标签，右侧"复制"按钮。
+ * 默认半透明，hover 整个 code-block 才显出来——避免静态文档堆满按钮分散注意力。
+ * ================================================================= */
+.code-block {
+  position: relative;
+  margin: 1em 0;
+}
+.code-block .code-block-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #2a2622;
+  color: var(--paper-edge);
+  padding: 4px 10px 4px 14px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border-bottom: 1px solid #3a3631;
+}
+.code-block .code-lang {
+  color: #b8b0a3;
+}
+.code-block .code-copy-btn {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: #b8b0a3;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1;
+  padding: 3px 7px;
+  margin-left: 8px;
+  opacity: 0.55;
+  transition: opacity 130ms ease, color 130ms ease, background 130ms ease;
+}
+.code-block:hover .code-copy-btn { opacity: 1; }
+.code-block .code-copy-btn:hover {
+  color: var(--paper);
+  background: var(--vermilion);
+}
+.code-block .code-copy-btn.copied {
+  color: #b9e0a4;
+  opacity: 1;
+}
+.code-block .code-copy-btn.failed {
+  color: #f0a496;
+  opacity: 1;
+}
+/* head 紧贴 pre：让头部和代码块视觉上是同一块 */
+.code-block pre { margin: 0; }
+
+/* =================================================================
+ * highlight.js 主题：墨黑底面，三色调（莫兰迪）匹配纸本美学
+ * 不引入 hljs 自带 CSS（github-dark 之类），避免和 --ink/--vermilion 等
+ * 主色板冲突；自己写一份足够覆盖常见语言的最小子集。
+ * ================================================================= */
+.hljs                 { color: #e6e2d8; }   /* 默认前景 */
+.hljs-comment,
+.hljs-quote           { color: #8a8377; font-style: italic; } /* 灰墨 */
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-section,
+.hljs-doctag          { color: #e8b178; }   /* 暖橙：关键字 */
+.hljs-string,
+.hljs-attr,
+.hljs-template-tag,
+.hljs-template-variable { color: #b3c98c; } /* 苔绿：字符串 */
+.hljs-name,
+.hljs-tag             { color: #c8a4d4; }   /* 淡紫：标签/函数名 */
+.hljs-title,
+.hljs-title.function_,
+.hljs-built_in        { color: #e6c875; }   /* 暖黄：函数 */
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-meta,
+.hljs-regexp          { color: #d88860; }   /* 朱橙：数字/正则 */
+.hljs-variable,
+.hljs-attribute,
+.hljs-selector-attr,
+.hljs-selector-class,
+.hljs-selector-id,
+.hljs-selector-pseudo { color: #9bbed4; }   /* 冷青：变量/选择器 */
+.hljs-type,
+.hljs-class .hljs-title { color: #c8a4d4; } /* 淡紫：类型/类名 */
+.hljs-deletion        { color: #e07a78; background: rgba(200, 48, 46, 0.15); }
+.hljs-addition        { color: #b3c98c; background: rgba(91, 111, 63, 0.18); }
+.hljs-emphasis        { font-style: italic; }
+.hljs-strong          { font-weight: 700; }
+.hljs-link            { color: #9bbed4; text-decoration: underline; }
+.md-content blockquote {
+  border-left: 3px solid var(--vermilion);
+  padding: 4px 0 4px 18px;
+  margin: 1em 0;
+  font-style: italic;
+  color: var(--ink-2);
+}
+.md-content a {
+  color: var(--indigo);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--paper-edge);
+  transition: text-decoration-color 150ms ease;
+}
+.md-content a:hover { text-decoration-color: var(--indigo); }
+.md-content strong { font-weight: 600; color: var(--ink); }
+.md-content em { font-style: italic; }
+.md-content hr {
+  border: 0;
+  border-top: 1px solid var(--paper-edge);
+  margin: 2em 0;
+}
+.md-content table {
+  border-collapse: collapse;
+  margin: 1em 0;
+  font-size: 0.92em;
+}
+.md-content th, .md-content td {
+  border-bottom: 1px solid var(--paper-edge);
+  padding: 8px 14px 8px 0;
+  text-align: left;
+}
+.md-content th {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  font-weight: 500;
+}
+
+/* wikilink: distinctive small caps + indigo */
+.md-content .wikilink,
+.wikilink {
+  font-family: var(--font-body);
+  color: var(--indigo);
+  cursor: pointer;
+  text-decoration: none;
+  border-bottom: 1px dotted var(--indigo);
+  padding-bottom: 1px;
+  transition: all 130ms ease;
+}
+.md-content .wikilink:hover,
+.wikilink:hover {
+  background: var(--indigo);
+  color: var(--paper);
+  border-bottom-color: var(--indigo);
+}
+
+/* =================================================================
+ * Modal — like a typewritten card laid on top
+ * ================================================================= */
+
+.modal-overlay {
+  position: fixed; inset: 0;
+  background: rgba(26, 24, 20, 0.55);
+  backdrop-filter: blur(2px);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 1000;
+  animation: modal-fade 180ms ease;
+}
+@keyframes modal-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.modal {
+  background: var(--paper);
+  border: var(--rule) solid var(--ink);
+  padding: 32px 36px 28px;
+  width: 460px;
+  box-shadow:
+    0 1px 0 var(--ink),
+    8px 8px 0 rgba(26, 24, 20, 0.18);
+  position: relative;
+  animation: modal-rise 220ms cubic-bezier(.16,.84,.44,1);
+}
+@keyframes modal-rise {
+  from { transform: translateY(8px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+.modal h3 {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+  margin-bottom: 20px;
+  font-variation-settings: "opsz" 36;
+}
+.form-group { margin-bottom: 18px; }
+.form-group label {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-bottom: 6px;
+}
+.error-text { color: var(--vermilion); font-size: 12px; margin-top: 8px; font-style: italic; }
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 24px;
+  padding-top: 18px;
+  border-top: 1px solid var(--paper-edge);
+}
+
+/* =================================================================
+ * Common helpers
+ * ================================================================= */
+.empty-hint {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--ink-4);
+  font-style: italic;
+  font-size: 14px;
+}

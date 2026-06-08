@@ -1,0 +1,34 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  # 编译命令
+  cmd = "go build -o ./tmp/okb-web ."
+  # 运行的二进制
+  bin = "./tmp/okb-web"
+  # 监听这些目录
+  include_dir = [".", "internal", "internal/handler", "internal/config"]
+  # 监听的文件后缀
+  include_ext = ["go", "html", "tmpl"]
+  # 排除目录
+  exclude_dir = ["tmp", "web", "node_modules", "vendor", "spaces"]
+  # 排除文件
+  exclude_file = []
+  # 编译延迟（毫秒），避免频繁触发
+  delay = 1000
+  # 停止旧进程的信号
+  stop_on_error = true
+  send_interrupt = true
+  kill_delay = 500
+
+[log]
+  time = false
+
+[color]
+  main = "green"
+  watcher = "cyan"
+  build = "yellow"
+  runner = "magenta"
+
+[misc]
+  clean_on_exit = true
