@@ -47,6 +47,7 @@ func runChatHelper(spaceDir string, payload map[string]any) (map[string]any, err
 
 	cmd := exec.Command(config.C.OpenKBPython, scriptPath)
 	cmd.Stdin = strings.NewReader(string(body))
+	cmd.Env = enrichLLMEnv(os.Environ())
 	var out, errBuf strings.Builder
 	cmd.Stdout = &out
 	cmd.Stderr = &errBuf
@@ -75,6 +76,48 @@ func runChatHelper(spaceDir string, payload map[string]any) (map[string]any, err
 		return nil, fmt.Errorf("parse helper JSON: %v; line=%s", err, jsonLine)
 	}
 	return result, nil
+}
+
+// enrichLLMEnv 在 spawn chat_helper.py 时把 Web 设置页保存的 LLM 配置注入到 env。
+//
+// 用 config.Snapshot() 拿最新值（Web 设置页 POST /api/settings 后 hot-reload 立即生效）。
+// 仅当用户**新设了**值才覆盖父进程 env，没设的字段保留父进程原值（兼容用户在 .env 文件配的）。
+//
+// chat_helper.py 内 _setup_env 会把这些再传给 LiteLLM。
+func enrichLLMEnv(parent []string) []string {
+	cfg := config.Snapshot()
+	// 用 map 去重，子进程只看到一份每个 key
+	out := make(map[string]string, len(parent)+4)
+	for _, kv := range parent {
+		i := strings.IndexByte(kv, '=')
+		if i < 0 {
+			continue
+		}
+		out[kv[:i]] = kv[i+1:]
+	}
+	if cfg.LLMApiKey != "" {
+		out["LLM_API_KEY"] = cfg.LLMApiKey
+		// LiteLLM 还会按 provider 名找特定 env：DeepSeek 走 DEEPSEEK_API_KEY，OpenAI 走 OPENAI_API_KEY 等。
+		// 这里把通用键设上，OpenKB 内部 _setup_llm_key 会按 model 前缀映射到具体的厂商 env，
+		// 不需要我们这边做映射。
+		out["OPENAI_API_KEY"] = cfg.LLMApiKey
+		out["DEEPSEEK_API_KEY"] = cfg.LLMApiKey
+	}
+	if cfg.LLMBaseURL != "" {
+		out["LLM_BASE_URL"] = cfg.LLMBaseURL
+		out["OPENAI_BASE_URL"] = cfg.LLMBaseURL
+	}
+	if cfg.LLMModel != "" {
+		out["LLM_MODEL"] = cfg.LLMModel
+	}
+	if cfg.LLMLanguage != "" {
+		out["LLM_LANGUAGE"] = cfg.LLMLanguage
+	}
+	env := make([]string, 0, len(out))
+	for k, v := range out {
+		env = append(env, k+"="+v)
+	}
+	return env
 }
 
 // ChatListSessions GET /api/chat/sessions/:space
@@ -340,6 +383,7 @@ func ChatStream(c *gin.Context) {
 	cmd := exec.Command(config.C.OpenKBPython, "-u",
 		filepath.Join(config.C.CacheDir, "chat_helper.py"))
 	cmd.Stdin = strings.NewReader(string(body))
+	cmd.Env = enrichLLMEnv(os.Environ())
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		writeEvent(`{"event":"error","error":"pipe stdout failed"}`)

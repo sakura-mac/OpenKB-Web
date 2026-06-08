@@ -63,6 +63,12 @@ func main() {
 		api.GET("/locale", handler.DetectLocale)
 		api.GET("/suggestions/:space", handler.Suggestions)
 
+		// 设置（LLM API key / base url / model / spaces 路径）
+		// 持久化在 <OKB_HOME>/config.json
+		api.GET("/settings", handler.GetSettings)
+		api.POST("/settings", handler.UpdateSettings)
+		api.POST("/settings/check", handler.CheckSettings)
+
 		// Deck（HTML 幻灯片导出）
 		api.POST("/deck", handler.CreateDeck)
 		api.GET("/decks/:space", handler.ListDecks)

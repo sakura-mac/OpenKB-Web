@@ -76,4 +76,33 @@ export const api = {
     request<{ suggestions: string[] }>(
       `/api/suggestions/${encodeURIComponent(space)}?lang=${encodeURIComponent(lang)}`,
     ),
+
+  // 设置（LLM API key 等），持久化在 <OKB_HOME>/config.json
+  // GET 返回 mask 后的 key（"sk-***xxxx"），llm_has_key 标识是否已设；
+  // POST 任意字段空字符串 = 保持不变；"__CLEAR__" = 显式清空
+  getSettings: () =>
+    request<{
+      okb_home: string
+      spaces_root: string
+      okb_spec: string
+      llm_api_key: string
+      llm_has_key: boolean
+      llm_base_url: string
+      llm_model: string
+      llm_language: string
+      openkb_ready: boolean
+      openkb_bin?: string
+    }>('/api/settings'),
+  updateSettings: (patch: Record<string, string>) =>
+    request<{
+      okb_home: string
+      spaces_root: string
+      llm_has_key: boolean
+      llm_base_url: string
+      llm_model: string
+    }>('/api/settings', 'POST', patch),
+  checkSettings: () =>
+    request<{ ok: boolean; status?: number; model?: string; error?: string }>(
+      '/api/settings/check', 'POST', {},
+    ),
 }
