@@ -204,9 +204,12 @@ func CreateSpace(c *gin.Context) {
 	spaceDir := filepath.Join(config.C.SpacesRoot, name)
 	customPath := strings.TrimSpace(req.Path)
 	if customPath != "" {
-		// 展开 ~
-		if strings.HasPrefix(customPath, "~/") {
-			customPath = filepath.Join(os.Getenv("HOME"), customPath[2:])
+		// 展开 ~。Windows 上 $HOME 可能为空，必须用 os.UserHomeDir()
+		// （Windows 上它读 USERPROFILE，跨平台兼容）。
+		if strings.HasPrefix(customPath, "~/") || strings.HasPrefix(customPath, `~\`) {
+			if home, err := os.UserHomeDir(); err == nil {
+				customPath = filepath.Join(home, customPath[2:])
+			}
 		}
 	}
 
@@ -220,10 +223,19 @@ func CreateSpace(c *gin.Context) {
 		os.RemoveAll(spaceDir)
 	}
 
-	// 创建目录 + 写 .env（同步，很快）
-	os.MkdirAll(spaceDir, 0755)
+	// 创建目录 + 写 .env（同步，很快）。失败要让用户知道——
+	// 之前 mkdir/writefile 错误被吃掉，CreateSpace 看起来"成功"但 init 一定挂。
+	if err := os.MkdirAll(spaceDir, 0o755); err != nil {
+		log.Printf("❌ CreateSpace MkdirAll [%s] failed: %v", spaceDir, err)
+		c.JSON(500, gin.H{"error": fmt.Sprintf("创建目录失败：%v（路径：%s）", err, spaceDir)})
+		return
+	}
 	envContent := fmt.Sprintf("LLM_API_KEY=%s\nLLM_BASE_URL=%s\n", config.C.LLMApiKey, config.C.LLMBaseURL)
-	os.WriteFile(filepath.Join(spaceDir, ".env"), []byte(envContent), 0644)
+	if err := os.WriteFile(filepath.Join(spaceDir, ".env"), []byte(envContent), 0o644); err != nil {
+		log.Printf("❌ CreateSpace WriteFile .env [%s] failed: %v", spaceDir, err)
+		c.JSON(500, gin.H{"error": fmt.Sprintf("写入 .env 失败：%v", err)})
+		return
+	}
 
 	// 标记状态为初始化中
 	statusMu.Lock()
@@ -235,10 +247,15 @@ func CreateSpace(c *gin.Context) {
 
 	// 后台 goroutine 执行 openkb init
 	go func() {
-		success, _, stderr := okb.RunWithStdin(
+		log.Printf("🆕 CreateSpace [%s] → openkb init in %s", name, spaceDir)
+		success, stdout, stderr := okb.RunWithStdin(
 			[]string{"init", "-m", config.C.LLMModel, "-l", config.C.LLMLanguage},
 			spaceDir, "\n",
 		)
+		if !success {
+			log.Printf("❌ openkb init [%s] failed:\n--- stdout ---\n%s\n--- stderr ---\n%s",
+				name, stdout, stderr)
+		}
 
 		statusMu.Lock()
 		defer statusMu.Unlock()

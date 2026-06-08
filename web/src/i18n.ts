@@ -71,6 +71,13 @@ const messages = {
       noChange: '没有改动',
       saved: '✓ 已保存',
       saveFailed: '保存失败：{e}',
+      autosave: {
+        idle: '已保存',
+        dirty: '编辑中…',
+        saving: '保存中…',
+        saved: '✓ 已保存',
+        error: '✗ 保存失败',
+      },
     },
     bootstrap: {
       eyebrow: '初始化',
@@ -336,6 +343,13 @@ const messages = {
       noChange: 'No changes',
       saved: '✓ Saved',
       saveFailed: 'Save failed: {e}',
+      autosave: {
+        idle: 'Saved',
+        dirty: 'Editing…',
+        saving: 'Saving…',
+        saved: '✓ Saved',
+        error: '✗ Save failed',
+      },
     },
     bootstrap: {
       eyebrow: 'Initializing',

@@ -1,15 +1,17 @@
 <!--
-  SettingsPanel — 用户配置入口。
+  SettingsPanel — 用户配置入口（实时自动保存版）。
 
   覆盖 LLM API 配置 + 知识库存储路径 + OpenKB spec。
-  数据通过 GET /api/settings 拉，POST /api/settings 保存。
+  数据通过 GET /api/settings 拉，POST /api/settings 自动保存（debounce 600ms）。
 
   约定：
    - api_key 字段从后端拿到的是 mask 形式（sk-***xxxx）；
-     用户**不动这个字段**就提交 → 后端不会改 key（"" = 保持不变）。
-     用户**输入新 key**就提交新值。
+     用户**不动这个字段**就不发送 → 后端不会改 key（"" = 保持不变）。
+     用户**输入新 key**会触发 debounce 自动保存。
      用户想**清除 key** → 点"清除"按钮，传 "__CLEAR__" 给后端。
-   - 测试连接：POST /api/settings/check → 后端实际跑一次 chat completions 验证。
+   - 关闭抽屉只是右滑回去（emit('close')），表单值已经写盘（自动保存）。
+   - 测试连接：POST /api/settings/check → 后端跑一次 chat completions 验证。
+     输入框里的草稿带过去，可在保存生效前先验证。
 -->
 <template>
   <div class="settings-overlay" @click.self="$emit('close')">
@@ -19,7 +21,13 @@
           <div class="eyebrow">{{ t('settings.eyebrow') }}</div>
           <h2 id="settings-title" class="sp-title">{{ t('settings.title') }}</h2>
         </div>
-        <button class="sp-close" :title="t('common.close')" @click="$emit('close')">×</button>
+        <div class="sp-head-right">
+          <span class="autosave-indicator" :class="autosaveClass" :title="autosaveTitle">
+            <span class="autosave-dot"></span>
+            {{ autosaveLabel }}
+          </span>
+          <button class="sp-close" :title="t('common.close')" @click="$emit('close')">×</button>
+        </div>
       </header>
 
       <div v-if="loading" class="sp-loading">
@@ -115,19 +123,12 @@
           </div>
         </section>
       </div>
-
-      <footer class="sp-foot">
-        <button class="btn btn-ghost" @click="$emit('close')">{{ t('common.cancel') }}</button>
-        <button class="btn btn-primary" :disabled="saving" @click="doSave">
-          {{ saving ? t('common.saving') : t('common.save') }}
-        </button>
-      </footer>
     </aside>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api } from '../api'
 
@@ -135,10 +136,14 @@ const { t } = useI18n()
 defineEmits<{ close: [] }>()
 
 const loading = ref(true)
-const saving = ref(false)
 const checking = ref(false)
 const checkMsg = ref('')
 const checkOk = ref(false)
+
+// 自动保存状态：idle 干净 | dirty 有未保存改动 | saving 上传中 | saved 刚保存完 | error 失败
+type AutosaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'error'
+const autosaveState = ref<AutosaveState>('idle')
+const autosaveError = ref('')
 
 // raw 是 GET /api/settings 原样返回（含 mask 后的 key、只读字段）
 const raw = reactive({
@@ -154,8 +159,7 @@ const raw = reactive({
   openkb_bin: '' as string | undefined,
 })
 
-// form 是用户编辑中的值。提交时只发送有变化（非空）的字段；
-// 空字符串 = "保持后端不变"（这是后端约定，前端 UI 通过 placeholder 显示原值即可）
+// form 是用户编辑中的值。debounce 后自动 POST 给后端。
 const form = reactive({
   llm_api_key: '',
   llm_base_url: '',
@@ -163,19 +167,30 @@ const form = reactive({
   llm_language: 'zh',
   spaces_root: '',
   okb_spec: '',
-  // mirror raw 字段，给模板用
-  llm_has_key: false,
+  llm_has_key: false,  // mirror raw 给模板用
 })
 
 const maskedKey = computed(() => raw.llm_api_key || '')
+
+const autosaveClass = computed(() => `as-${autosaveState.value}`)
+const autosaveLabel = computed(() => {
+  switch (autosaveState.value) {
+    case 'idle': return t('settings.autosave.idle')
+    case 'dirty': return t('settings.autosave.dirty')
+    case 'saving': return t('settings.autosave.saving')
+    case 'saved': return t('settings.autosave.saved')
+    case 'error': return t('settings.autosave.error')
+  }
+})
+const autosaveTitle = computed(() =>
+  autosaveState.value === 'error' ? autosaveError.value : autosaveLabel.value,
+)
 
 async function load() {
   loading.value = true
   try {
     const res = await api.getSettings()
     Object.assign(raw, res)
-    // form 初始化为空字符串（让 placeholder 显示当前值）
-    // 但 base_url/model/language 直接绑现值，便于直接编辑（这些不敏感）
     form.llm_base_url = res.llm_base_url
     form.llm_model = res.llm_model
     form.llm_language = res.llm_language || 'zh'
@@ -185,45 +200,73 @@ async function load() {
     form.llm_has_key = res.llm_has_key
   } finally {
     loading.value = false
+    // load 完才挂 watch，避免初始化触发 dirty
+    setupAutosave()
   }
 }
 
 function clearKey() {
-  // 让用户能一键清除 API key（提示框确认后传 __CLEAR__ 给后端）
   if (!confirm(t('settings.clearKeyConfirm'))) return
-  // 临时把 form.llm_api_key 设成 sentinel；下次保存或者立即提交都行
   form.llm_api_key = '__CLEAR__'
-  doSave()
+  // watch 会自动触发保存
 }
 
-async function doSave() {
-  saving.value = true
-  checkMsg.value = ''
+// debounce 600ms 自动保存
+let saveTimer: number | null = null
+let watchInited = false
+
+function setupAutosave() {
+  if (watchInited) return
+  watchInited = true
+  // 监听 form 6 个字段，任一变了就 mark dirty + 重置 timer
+  watch(
+    () => [
+      form.llm_api_key,
+      form.llm_base_url,
+      form.llm_model,
+      form.llm_language,
+      form.spaces_root,
+      form.okb_spec,
+    ],
+    () => {
+      autosaveState.value = 'dirty'
+      if (saveTimer != null) window.clearTimeout(saveTimer)
+      saveTimer = window.setTimeout(doAutoSave, 600)
+    },
+  )
+}
+
+async function doAutoSave() {
+  // 只发送有变化（非空）的字段；空 = "保持不变"（后端约定）
+  const patch: Record<string, string> = {}
+  if (form.llm_api_key) patch.llm_api_key = form.llm_api_key
+  if (form.llm_base_url && form.llm_base_url !== raw.llm_base_url) patch.llm_base_url = form.llm_base_url
+  if (form.llm_model && form.llm_model !== raw.llm_model) patch.llm_model = form.llm_model
+  if (form.llm_language && form.llm_language !== raw.llm_language) patch.llm_language = form.llm_language
+  if (form.spaces_root) patch.spaces_root = form.spaces_root
+  if (form.okb_spec) patch.okb_spec = form.okb_spec
+  if (Object.keys(patch).length === 0) {
+    // 实际没差异，回到 idle（比如用户输入又删干净）
+    autosaveState.value = 'idle'
+    return
+  }
+  autosaveState.value = 'saving'
   try {
-    const patch: Record<string, string> = {}
-    if (form.llm_api_key) patch.llm_api_key = form.llm_api_key
-    if (form.llm_base_url && form.llm_base_url !== raw.llm_base_url) patch.llm_base_url = form.llm_base_url
-    if (form.llm_model && form.llm_model !== raw.llm_model) patch.llm_model = form.llm_model
-    if (form.llm_language && form.llm_language !== raw.llm_language) patch.llm_language = form.llm_language
-    if (form.spaces_root) patch.spaces_root = form.spaces_root
-    if (form.okb_spec) patch.okb_spec = form.okb_spec
-    if (Object.keys(patch).length === 0) {
-      // 没改任何东西，提示用户
-      checkMsg.value = t('settings.noChange')
-      checkOk.value = true
-      return
-    }
     const res = await api.updateSettings(patch)
     Object.assign(raw, res)
-    form.llm_api_key = ''
+    // api_key/spaces_root/okb_spec 写完清空 input，让 placeholder 显示新的 saved 值
+    if (patch.llm_api_key) form.llm_api_key = ''
+    if (patch.spaces_root) form.spaces_root = ''
+    if (patch.okb_spec) form.okb_spec = ''
     form.llm_has_key = res.llm_has_key
-    checkMsg.value = t('settings.saved')
-    checkOk.value = true
+    autosaveState.value = 'saved'
+    // 1.4s 后回到 idle，避免一直显示 "已保存" 占视觉
+    window.setTimeout(() => {
+      if (autosaveState.value === 'saved') autosaveState.value = 'idle'
+    }, 1400)
   } catch (e: any) {
-    checkMsg.value = t('settings.saveFailed', { e: e?.message || e })
-    checkOk.value = false
-  } finally {
-    saving.value = false
+    autosaveState.value = 'error'
+    autosaveError.value = e?.message || String(e)
   }
 }
 
@@ -232,7 +275,6 @@ async function doCheck() {
   checkMsg.value = ''
   try {
     // 把当前 form 草稿带给后端：未保存的输入也能直接测试。
-    // 空字段后端会回退到已保存值（保持兼容：未改任何东西也能测当前配置）。
     const draft: Record<string, string> = {}
     if (form.llm_api_key && form.llm_api_key !== '__CLEAR__') draft.llm_api_key = form.llm_api_key
     if (form.llm_base_url) draft.llm_base_url = form.llm_base_url
@@ -255,6 +297,7 @@ async function doCheck() {
 
 onMounted(load)
 </script>
+
 
 <style scoped>
 .settings-overlay {
@@ -307,6 +350,39 @@ onMounted(load)
   transition: color 130ms ease;
 }
 .sp-close:hover { color: var(--vermilion); }
+
+/* 实时保存状态指示器：右上角小圆点 + 文案 */
+.sp-head-right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.autosave-indicator {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--ink-4);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+  transition: color 200ms ease;
+}
+.autosave-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ink-4);
+  display: inline-block;
+  transition: background 200ms ease;
+}
+.autosave-indicator.as-idle  .autosave-dot { background: var(--ink-4); }
+.autosave-indicator.as-dirty .autosave-dot { background: var(--vermilion); animation: pulse 1.2s ease-in-out infinite; }
+.autosave-indicator.as-saving .autosave-dot { background: var(--vermilion); animation: pulse 0.6s ease-in-out infinite; }
+.autosave-indicator.as-saved { color: var(--moss, #6b8e23); }
+.autosave-indicator.as-saved .autosave-dot { background: var(--moss, #6b8e23); }
+.autosave-indicator.as-error { color: var(--vermilion); }
+.autosave-indicator.as-error .autosave-dot { background: var(--vermilion); }
 
 .sp-loading {
   flex: 1;
@@ -418,12 +494,4 @@ onMounted(load)
 .status-dot.ok { background: var(--moss); }
 .status-dot.warn { background: var(--vermilion); animation: pulse 1.6s ease-in-out infinite; }
 @keyframes pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
-
-.sp-foot {
-  padding: 14px 28px 18px;
-  border-top: 1.5px solid var(--ink);
-  display: flex;
-  gap: 12px;
-  justify-content: flex-end;
-}
 </style>
