@@ -1,0 +1,50 @@
+name: CI
+
+# 每次 push 到 main / 提 PR 时跑：编前端 + go build + go vet
+# 不出 artifact，只验证能编出来。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build & Vet (linux-amd64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install frontend deps
+        working-directory: web
+        run: npm ci
+
+      - name: Type-check & build frontend
+        working-directory: web
+        run: npm run build
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        env:
+          CGO_ENABLED: '0'
+        run: go build -v -o okb-web ./...
+
+      - name: Verify binary
+        run: |
+          ls -lh okb-web
+          file okb-web

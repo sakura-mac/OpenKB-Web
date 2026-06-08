@@ -18,8 +18,13 @@ import (
 //go:embed web/dist/*
 var webFS embed.FS
 
+// version 由 release workflow 通过 -ldflags="-X main.version=v0.1.0" 注入；
+// 本地 go run 时为 "dev"。前端 /api/version 暴露给设置页显示。
+var version = "dev"
+
 func main() {
 	config.Init()
+	log.Printf("📦 OKB Web 版本: %s", version)
 
 	// 首次启动：异步装 OpenKB（拉 uv standalone + uv tool install）。
 	// HTTP 服务立即启动，前端通过 /api/bootstrap/status 看进度，没就绪时显示遮罩。

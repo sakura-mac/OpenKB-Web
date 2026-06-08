@@ -29,16 +29,52 @@ Go (Gin) 后端 + Vue 3 (Vite + TypeScript) 前端，前端编译后通过 `go:e
 
 ## 🚀 快速开始
 
-### 前置要求
+### 方式一：下载预编译二进制（推荐）
+
+到 **[Releases](https://github.com/sakura-mac/OpenKB-Web/releases/latest)** 下载对应平台压缩包：
+
+| 平台 | 文件 |
+|---|---|
+| macOS Apple Silicon (M1/M2/M3) | `OpenKB-Web-vX.Y.Z-darwin-arm64.tar.gz` |
+| macOS Intel | `OpenKB-Web-vX.Y.Z-darwin-amd64.tar.gz` |
+| Windows x64 | `OpenKB-Web-vX.Y.Z-windows-amd64.zip` |
+| Linux x64 | `OpenKB-Web-vX.Y.Z-linux-amd64.tar.gz` |
+| Linux ARM64 | `OpenKB-Web-vX.Y.Z-linux-arm64.tar.gz` |
+
+```bash
+# macOS / Linux
+tar -xzf OpenKB-Web-*-darwin-arm64.tar.gz
+cd OpenKB-Web-*
+./okb-web
+# macOS 首次运行如被 Gatekeeper 拦截：xattr -d com.apple.quarantine ./okb-web
+```
+
+```powershell
+# Windows
+Expand-Archive OpenKB-Web-*-windows-amd64.zip
+cd OpenKB-Web-*
+.\okb-web.exe
+```
+
+启动后浏览器打开 http://localhost:8901，首次会自动下载 uv 并安装 OpenKB（约 1-2 分钟）。在 Web 设置页填入 LLM API Key 即可使用。
+
+校验下载完整性：
+
+```bash
+sha256sum -c SHA256SUMS.txt
+```
+
+### 方式二：从源码编译
+
+#### 前置要求
 
 | 依赖 | 版本 | 说明 |
 |------|------|------|
-| [Go](https://go.dev) | ≥ 1.22 | 编译后端 |
+| [Go](https://go.dev) | ≥ 1.23 | 编译后端 |
 | [Node.js](https://nodejs.org) | ≥ 18 | 编译前端 |
-| [uv](https://docs.astral.sh/uv/) | latest | Python 包管理器，自动安装 OpenKB |
 | LLM API Key | — | DeepSeek / OpenAI / Claude 等 LiteLLM 兼容 API |
 
-> **注意**：无需手动安装 OpenKB 或 Python。首次启动时会自动通过 `uv tool install` 拉取 OpenKB 及其所有依赖。
+> **注意**：无需手动安装 uv / OpenKB / Python。首次启动时自动从 GitHub 拉取 uv standalone 二进制并 `uv tool install` 拉取 OpenKB 及其所有依赖到 `~/.config/OKB/runtime/`，与系统 Python 完全隔离。
 
 ### 安装 & 启动
 

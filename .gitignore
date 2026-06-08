@@ -1,12 +1,14 @@
 # 编译产物
-web/dist/
-dist/
-build/
+# web/dist 内容忽略但保留目录（go:embed web/dist/* 编译时需要目录存在）
+web/dist/*
+!web/dist/.gitkeep
+/dist/
+/build/
 *.exe
 *.dmg
 *.msi
 *.AppImage
-okb-web
+/okb-web
 okb-web-*
 !okb-web/
 
