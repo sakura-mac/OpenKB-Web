@@ -21,12 +21,10 @@ var webFS embed.FS
 func main() {
 	config.Init()
 
-	// 首次启动：从 PyPI / git 拉 OpenKB；之后秒过。
-	// 失败不致命：用户可能离线，先让 web 起来给提示。
-	if err := okb.Bootstrap(); err != nil {
-		log.Printf("⚠️  OpenKB bootstrap 失败：%v", err)
-		log.Printf("    可设环境变量 OKB_SPEC=openkb==0.3.0 切换到 PyPI 稳定版（不含 deck）")
-	}
+	// 首次启动：异步装 OpenKB（拉 uv standalone + uv tool install）。
+	// HTTP 服务立即启动，前端通过 /api/bootstrap/status 看进度，没就绪时显示遮罩。
+	// 失败也不致命：用户能改设置后调 /api/bootstrap/retry 重跑。
+	okb.BootstrapAsync()
 
 	// 文件 watcher：监听每个 space 的 raw/，自动 spawn openkb add/remove。
 	// handler 包通过 SetWatchManager 拿到引用，CreateSpace/DeleteSpace 时挂载/卸载。
@@ -68,6 +66,10 @@ func main() {
 		api.GET("/settings", handler.GetSettings)
 		api.POST("/settings", handler.UpdateSettings)
 		api.POST("/settings/check", handler.CheckSettings)
+
+		// Bootstrap 状态：前端轮询初始化进度（uv 下载 / OpenKB 安装 / 资源释放）
+		api.GET("/bootstrap/status", handler.GetBootstrapStatus)
+		api.POST("/bootstrap/retry", handler.RetryBootstrap)
 
 		// Deck（HTML 幻灯片导出）
 		api.POST("/deck", handler.CreateDeck)

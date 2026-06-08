@@ -105,4 +105,17 @@ export const api = {
     request<{ ok: boolean; status?: number; model?: string; error?: string }>(
       '/api/settings/check', 'POST', {},
     ),
+
+  // Bootstrap 进度：启动时轮询（每 1s）直到 ready 或 failed
+  bootstrapStatus: () =>
+    request<{
+      phase: 'pending' | 'checking' | 'download-uv' | 'installing' | 'releasing' | 'ready' | 'failed'
+      message: string
+      progress: number
+      error?: string
+      started_at?: string
+      ended_at?: string
+    }>('/api/bootstrap/status'),
+  bootstrapRetry: () =>
+    request<{ phase: string; message: string; progress: number }>('/api/bootstrap/retry', 'POST', {}),
 }

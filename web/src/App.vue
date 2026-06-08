@@ -171,6 +171,16 @@
 
     <SettingsPanel v-if="showSettings" @close="showSettings = false" />
 
+    <!--
+      首次启动遮罩：一直 mount，组件内部根据 /api/bootstrap/status 决定可见性。
+      ready 时 emit('done') 后我们标记为 ready，组件自身 visible=false 撤掉遮罩。
+    -->
+    <BootstrapOverlay
+      v-if="!bootstrapReady"
+      @done="bootstrapReady = true"
+      @open-settings="showSettings = true"
+    />
+
     <div v-if="showCreate" class="modal-overlay" @click.self="showCreate = false">
       <div class="modal" style="width:560px">
         <div class="eyebrow" style="margin-bottom:6px">{{ t('create.formNo') }}</div>
@@ -236,6 +246,7 @@ import DocsView from './views/DocsView.vue'
 import GraphView from './views/GraphView.vue'
 import QueryView from './views/QueryView.vue'
 import SettingsPanel from './views/SettingsPanel.vue'
+import BootstrapOverlay from './views/BootstrapOverlay.vue'
 
 const { t } = useI18n()
 
@@ -256,6 +267,9 @@ const manageMode = ref(false)
 const selectedSpaces = ref<Set<string>>(new Set())
 const showCreate = ref(false)
 const showSettings = ref(false)
+// 首次启动初始化引导：BootstrapOverlay 内部轮询 /api/bootstrap/status，
+// ready 时 emit('done') → 这里置 true 撤掉遮罩。
+const bootstrapReady = ref(false)
 const newName = ref('')
 const newPath = ref('')
 const createError = ref('')
