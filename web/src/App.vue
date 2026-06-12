@@ -11,16 +11,17 @@
       </div>
 
       <nav class="space-list">
-        <div class="space-list-label">{{ t('sidebar.spaces') }} · {{ spaces.length }}</div>
+        <div class="space-list-label">{{ t('sidebar.spaces') }} · {{ allSpaces.length }}</div>
         <ol class="space-items">
           <li
-            v-for="(s, i) in spaces" :key="s.name"
+            v-for="(s, i) in allSpaces" :key="s.kind + ':' + s.name"
             :class="['space-item', {
-              active: !manageMode && currentSpace?.name === s.name,
+              code: s.kind === 'code',
+              active: !manageMode && currentSpaceName === s.name && currentKind === s.kind,
               selected: manageMode && selectedSpaces.has(s.name),
               manage: manageMode,
             }]"
-            @click="manageMode ? toggleSelect(s.name) : selectSpace(s.name)"
+            @click="manageMode ? toggleSelect(s.name) : selectAnySpace(s)"
           >
             <span class="space-num">{{ String(i + 1).padStart(2, '0') }}</span>
             <input
@@ -28,6 +29,7 @@
               :checked="selectedSpaces.has(s.name)"
               class="space-checkbox" @click.stop="toggleSelect(s.name)"
             />
+            <span class="space-kind">{{ s.kind === 'code' ? '⌘' : '¶' }}</span>
             <span class="space-name">{{ s.name }}</span>
             <!--
               空间统计数字：仅 hover 浮现「文档/产物面板」，不可点击。
@@ -37,7 +39,7 @@
               class="space-meta"
               @mouseenter="showDocsPopover(s.name, $event)"
               @mouseleave="scheduleHideDocsPopover()"
-            >{{ t('sidebar.docsConcepts', { docs: s.docs, concepts: s.concepts }) }}</span>
+            >{{ s.kind === 'code' ? `${s.files || 0} files` : t('sidebar.docsConcepts', { docs: s.docs, concepts: s.concepts }) }}</span>
           </li>
           <li v-if="spaces.length === 0" class="empty-hint" style="padding:20px 0">
             {{ t('sidebar.noSpaces') }}
@@ -47,7 +49,8 @@
 
       <div class="sidebar-footer">
         <template v-if="!manageMode">
-          <button class="btn btn-primary" style="flex:1" @click="showCreate = true">{{ t('sidebar.newSpace') }}</button>
+          <button class="btn btn-primary" style="flex:1" @click="openCreate('kb')">{{ t('sidebar.newSpace') }}</button>
+          <button class="btn btn-ghost btn-sm" @click="openCreate('code')">⌘ Code</button>
           <button class="btn btn-ghost btn-sm" @click="manageMode = true">{{ t('sidebar.edit') }}</button>
         </template>
         <template v-else>
@@ -60,14 +63,14 @@
     </aside>
 
     <main class="main-area">
-      <header class="topbar" v-if="currentSpace">
+      <header class="topbar" v-if="currentSpace || currentCodeSpace">
         <div class="topbar-headline">
           <div class="eyebrow">{{ t('topbar.eyebrow') }}</div>
-          <h1 class="display topbar-title">{{ currentSpace.name }}</h1>
+          <h1 class="display topbar-title">{{ currentKind === 'code' ? currentCodeSpace?.name : currentSpace?.name }}</h1>
         </div>
         <nav class="tabs" aria-label="Sections">
           <button
-            v-for="t2 in tabs" :key="t2.key"
+            v-for="t2 in visibleTabs" :key="t2.key"
             :class="['tab', { active: tab === t2.key }]"
             @click="tab = t2.key"
           >
@@ -107,13 +110,19 @@
       </header>
 
       <section class="content">
-        <div v-if="!currentSpace" class="empty-state">
+        <div v-if="!currentSpace && !currentCodeSpace" class="empty-state">
           <div class="empty-glyph">¶</div>
           <p class="empty-line">{{ t('empty.pickLine1') }}</p>
           <p class="empty-line">{{ t('empty.pickLine2') }}</p>
         </div>
+        <CodeView
+          v-else-if="tab === 'code' && currentCodeSpace"
+          :key="'code:' + currentCodeSpace.name"
+          :space="currentCodeSpace"
+          @refresh="refreshSpace"
+        />
         <WikiView
-          v-else-if="tab === 'wiki'"
+          v-else-if="tab === 'wiki' && currentSpace"
           :key="'wiki:' + currentSpace.name"
           :space="currentSpace"
           :initial-page="pendingWikiPage"
@@ -121,7 +130,7 @@
           @focus-in-graph="onFocusInGraph"
         />
         <GraphView
-          v-else-if="tab === 'graph'"
+          v-else-if="tab === 'graph' && currentSpace"
           :key="'graph:' + currentSpace.name"
           :space="currentSpace"
           :focus-target="pendingGraphFocus"
@@ -129,7 +138,7 @@
           @consumed="pendingGraphFocus = null"
         />
         <QueryView
-          v-else-if="tab === 'query'"
+          v-else-if="tab === 'query' && currentSpace"
           :key="'query:' + currentSpace.name"
           :space="currentSpace"
           @open-wiki="onOpenWiki"
@@ -198,7 +207,7 @@
         <div class="form-group">
           <label>{{ t('create.pathLabel') }}</label>
           <div style="display:flex; gap:8px; align-items:flex-end">
-            <input v-model="newPath" type="text" :placeholder="t('create.pathPlaceholder')" readonly style="flex:1" />
+            <input v-model="newPath" type="text" :placeholder="createKind === 'code' ? '选择代码仓库目录（必选）' : t('create.pathPlaceholder')" readonly style="flex:1" />
             <button class="btn btn-sm" @click="toggleCreateBrowser()" :title="t('common.browse')">{{ t('common.browse') }}</button>
           </div>
         </div>
@@ -227,7 +236,7 @@
         <div class="modal-actions">
           <button class="btn btn-ghost" @click="showCreate = false">{{ t('common.cancel') }}</button>
           <button class="btn btn-primary" :disabled="creating" @click="doCreate">
-            {{ creating ? t('common.creating') : t('common.create') }}
+            {{ creating ? t('common.creating') : (createKind === 'code' ? '创建代码空间' : t('common.create')) }}
           </button>
         </div>
       </div>
@@ -240,11 +249,12 @@ import { ref, onMounted, watch, computed, reactive } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api } from './api'
 import { useUpload } from './composables/useUpload'
-import type { SpaceInfo, SpaceDetail } from './types'
+import type { SpaceInfo, SpaceDetail, CodeSpaceInfo } from './types'
 import WikiView from './views/WikiView.vue'
 import DocsView from './views/DocsView.vue'
 import GraphView from './views/GraphView.vue'
 import QueryView from './views/QueryView.vue'
+import CodeView from './views/CodeView.vue'
 import SettingsPanel from './views/SettingsPanel.vue'
 import BootstrapOverlay from './views/BootstrapOverlay.vue'
 
@@ -254,14 +264,27 @@ const { t } = useI18n()
 const brandSubHtml = computed(() => t('brand.sub').replace(/\n/g, '<br/>'))
 
 const spaces = ref<SpaceInfo[]>([])
+const codeSpaces = ref<CodeSpaceInfo[]>([])
+const allSpaces = computed(() => [
+  ...spaces.value.map(s => ({ ...s, kind: 'kb' as const })),
+  ...codeSpaces.value.map(s => ({ ...s, docs: 0, concepts: 0 })),
+])
 const currentSpace = ref<SpaceDetail | null>(null)
+const currentCodeSpace = ref<CodeSpaceInfo | null>(null)
+const currentKind = ref<'kb' | 'code'>('kb')
+const currentSpaceName = computed(() => currentKind.value === 'code' ? currentCodeSpace.value?.name : currentSpace.value?.name)
 // tab 删除 docs：文档/产物 移到侧边栏 hover popover；主区只剩 知识/图谱/问答 三个章节。
-const tab = ref<'wiki' | 'graph' | 'query'>('wiki')
+const tab = ref<'wiki' | 'graph' | 'query' | 'code'>('wiki')
 const tabs = [
   { key: 'wiki',  num: 'I'   },
   { key: 'graph', num: 'II'  },
   { key: 'query', num: 'III' },
+  { key: 'code',  num: '⌘'   },
 ] as const
+const visibleTabs = computed(() => currentKind.value === 'code'
+  ? tabs.filter(t => t.key === 'code')
+  : tabs.filter(t => t.key !== 'code'),
+)
 
 const manageMode = ref(false)
 const selectedSpaces = ref<Set<string>>(new Set())
@@ -270,6 +293,7 @@ const showSettings = ref(false)
 // 首次启动初始化引导：BootstrapOverlay 内部轮询 /api/bootstrap/status，
 // ready 时 emit('done') → 这里置 true 撤掉遮罩。
 const bootstrapReady = ref(false)
+const createKind = ref<'kb' | 'code'>('kb')
 const newName = ref('')
 const newPath = ref('')
 const createError = ref('')
@@ -294,14 +318,31 @@ const { tasks: uploadTasks, startUpload, finishUpload } = useUpload()
 
 async function loadSpaces() {
   spaces.value = await api.listSpaces()
+  codeSpaces.value = await api.listCodeSpaces()
 }
 async function selectSpace(name: string) {
   const detail = await api.spaceDetail(name)
   if ('error' in detail) return
   currentSpace.value = detail as SpaceDetail
+  currentCodeSpace.value = null
+  currentKind.value = 'kb'
+  if (tab.value === 'code') tab.value = 'wiki'
+}
+async function selectCodeSpace(name: string) {
+  const detail = await api.codeSpaceDetail(name)
+  if ('error' in detail) return
+  currentCodeSpace.value = detail as CodeSpaceInfo
+  currentSpace.value = null
+  currentKind.value = 'code'
+  tab.value = 'code'
+}
+function selectAnySpace(s: SpaceInfo | (CodeSpaceInfo & { docs: number; concepts: number })) {
+  if (s.kind === 'code') selectCodeSpace(s.name)
+  else selectSpace(s.name)
 }
 async function refreshSpace() {
-  if (currentSpace.value) await selectSpace(currentSpace.value.name)
+  if (currentKind.value === 'code' && currentCodeSpace.value) await selectCodeSpace(currentCodeSpace.value.name)
+  else if (currentSpace.value) await selectSpace(currentSpace.value.name)
 }
 
 let refreshTimer: number | null = null
@@ -397,6 +438,14 @@ async function onPopoverRefresh() {
   }
 }
 
+function openCreate(kind: 'kb' | 'code') {
+  createKind.value = kind
+  newName.value = ''
+  newPath.value = ''
+  createError.value = ''
+  showCreate.value = true
+}
+
 async function toggleCreateBrowser() {
   showCreateBrowser.value = !showCreateBrowser.value
   if (showCreateBrowser.value) await createBrowseTo('')
@@ -423,8 +472,11 @@ async function doCreate() {
   const name = newName.value.trim()
   if (!name) { createError.value = t('create.errEmpty'); return }
   if (!/^[a-zA-Z0-9_-]+$/.test(name)) { createError.value = t('create.errInvalidName'); return }
+  if (createKind.value === 'code' && !newPath.value) { createError.value = '请选择代码仓库目录'; return }
   creating.value = true
-  const res = await api.createSpace(name, newPath.value || undefined)
+  const res = createKind.value === 'code'
+    ? await api.createCodeSpace(name, newPath.value)
+    : await api.createSpace(name, newPath.value || undefined)
   creating.value = false
   if (!res.success) {
     createError.value = res.error || t('create.initFail')
@@ -447,17 +499,32 @@ async function doCreate() {
       }
       setTimeout(async () => {
         try {
-          const st = await api.spaceStatus(name)
-          if (st.status === 'ready') {
-            finishUpload(taskId, true, t('create.ready', { name }))
-            await loadSpaces()
-            if (!currentSpace.value) await selectSpace(name)
-            return
-          }
-          if (st.status === 'error') {
-            finishUpload(taskId, false, st.error || t('create.initFail'))
-            await loadSpaces()
-            return
+          if (createKind.value === 'code') {
+            const ts = await api.getTask((res as any).task_id)
+            if (ts.status === 'done') {
+              finishUpload(taskId, true, '代码索引完成')
+              await loadSpaces()
+              await selectCodeSpace(name)
+              return
+            }
+            if (ts.status === 'error') {
+              finishUpload(taskId, false, ts.message || '代码索引失败')
+              await loadSpaces()
+              return
+            }
+          } else {
+            const st = await api.spaceStatus(name)
+            if (st.status === 'ready') {
+              finishUpload(taskId, true, t('create.ready', { name }))
+              await loadSpaces()
+              if (!currentSpace.value) await selectSpace(name)
+              return
+            }
+            if (st.status === 'error') {
+              finishUpload(taskId, false, st.error || t('create.initFail'))
+              await loadSpaces()
+              return
+            }
           }
         } catch { /* keep retrying */ }
         tick()
@@ -483,11 +550,14 @@ async function doDeleteSelected() {
     : t('create.deleteConfirmMany', { count: names.length, names: names.join('、') })
   if (!confirm(msg + t('create.deleteWarn'))) return
 
-  for (const name of names) await api.deleteSpace(name)
-
-  if (currentSpace.value && selectedSpaces.value.has(currentSpace.value.name)) {
-    currentSpace.value = null
+  for (const name of names) {
+    const code = codeSpaces.value.find(s => s.name === name)
+    if (code) await api.deleteCodeSpace(name)
+    else await api.deleteSpace(name)
   }
+
+  if (currentSpace.value && selectedSpaces.value.has(currentSpace.value.name)) currentSpace.value = null
+  if (currentCodeSpace.value && selectedSpaces.value.has(currentCodeSpace.value.name)) currentCodeSpace.value = null
   selectedSpaces.value.clear()
   manageMode.value = false
   await loadSpaces()

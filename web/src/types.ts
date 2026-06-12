@@ -1,8 +1,21 @@
 export interface SpaceInfo {
   name: string
   path: string
+  kind?: 'kb' | 'code'
   docs: number
   concepts: number
+  files?: number
+  indexed?: boolean
+}
+
+export interface CodeSpaceInfo {
+  name: string
+  path: string
+  kind: 'code'
+  indexed: boolean
+  files: number
+  codegraph?: string
+  modified_at?: number
 }
 
 export interface DocInfo {

@@ -101,6 +101,7 @@ func ListSpaces(c *gin.Context) {
 		spaces = append(spaces, model.SpaceInfo{
 			Name:     name,
 			Path:     realPath,
+			Kind:     "kb",
 			Docs:     countFiles(filepath.Join(spaceDir, "raw")),
 			Concepts: countMdFiles(filepath.Join(wikiDir, "concepts")),
 		})
@@ -163,7 +164,7 @@ func SpaceDetail(c *gin.Context) {
 		Entities:  listMdNames(filepath.Join(wikiDir, "entities")),
 		// chat agent 写的对比/专题笔记；目录可能不存在（旧 KB 没用过），listMdNames 返回 [] 即可
 		Explorations: listMdNames(filepath.Join(wikiDir, "explorations")),
-		Titles:    titles,
+		Titles:       titles,
 	})
 }
 

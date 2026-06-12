@@ -48,6 +48,13 @@ func main() {
 		api.GET("/spaces", handler.ListSpaces)
 		api.GET("/space/:name", handler.SpaceDetail)
 		api.GET("/wiki/:space/:category/:page", handler.WikiPage)
+		// CodeGraph 代码空间（独立于 OpenKB 文档空间）
+		api.GET("/code-spaces", handler.ListCodeSpaces)
+		api.GET("/code-space/:name", handler.CodeSpaceDetail)
+		api.POST("/code-spaces/create", handler.CreateCodeSpace)
+		api.POST("/code-spaces/delete", handler.DeleteCodeSpace)
+		api.POST("/code/query", handler.CodeQuery)
+		api.POST("/code/sync", handler.SyncCodeSpace)
 		api.POST("/spaces/create", handler.CreateSpace)
 		api.GET("/space-status/:name", handler.SpaceStatus)
 		api.POST("/spaces/delete", handler.DeleteSpace)

@@ -1,4 +1,4 @@
-import type { SpaceInfo, SpaceDetail, TaskStatus, GraphData, DeckInfo } from './types'
+import type { SpaceInfo, SpaceDetail, TaskStatus, GraphData, DeckInfo, CodeSpaceInfo } from './types'
 
 async function request<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
   const opts: RequestInit = { method, headers: { 'Content-Type': 'application/json' } }
@@ -20,7 +20,17 @@ async function request<T>(path: string, method = 'GET', body?: unknown): Promise
 
 export const api = {
   listSpaces: () => request<SpaceInfo[]>('/api/spaces'),
+  listCodeSpaces: () => request<CodeSpaceInfo[]>('/api/code-spaces'),
   spaceDetail: (name: string) => request<SpaceDetail>(`/api/space/${encodeURIComponent(name)}`),
+  codeSpaceDetail: (name: string) => request<CodeSpaceInfo>(`/api/code-space/${encodeURIComponent(name)}`),
+  createCodeSpace: (name: string, path: string) =>
+    request<{ success?: boolean; error?: string; task_id?: string; space?: CodeSpaceInfo }>('/api/code-spaces/create', 'POST', { name, path }),
+  deleteCodeSpace: (name: string) =>
+    request<{ success?: boolean }>('/api/code-spaces/delete', 'POST', { name }),
+  codeQuery: (space: string, question: string) =>
+    request<{ success: boolean; answer?: string; error?: string }>('/api/code/query', 'POST', { space, question }),
+  codeSync: (space: string) =>
+    request<{ success: boolean; task_id?: string; error?: string }>('/api/code/sync', 'POST', { space }),
   wikiPage: (space: string, category: string, page: string) =>
     request<{ content?: string; error?: string }>(
       `/api/wiki/${encodeURIComponent(space)}/${encodeURIComponent(category)}/${encodeURIComponent(page)}`,
