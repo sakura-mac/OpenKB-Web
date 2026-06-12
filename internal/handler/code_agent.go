@@ -152,10 +152,6 @@ func runCodeAgent(ctx context.Context, model, baseURL, apiKey, workDir string, m
 
 	var toolTrace []string
 
-	// 记录 agent 第一次给出的"待修订答案"——fact-check 失败时所有重试轮都基于它修订，
-	// 而不是基于上一轮的修订答案（避免错误累积）。
-	var firstAnswer string
-
 	// 进 loop 时 messages 形如 [system, ...历史 user/assistant（已确认成果）, 本轮 user]，
 	// 这一段是修订基线：fact-check 失败时把它原样保留，只丢本轮新增的 tool_calls / tool 回填。
 	// 注意切片必须在进 loop 前就拍快照——append 可能复用底层数组，等 messages 增长后再切就拿不到原段了。
@@ -227,25 +223,24 @@ func runCodeAgent(ctx context.Context, model, baseURL, apiKey, workDir string, m
 			emit(map[string]any{"event": "tool", "name": "fact_check_failed", "args": fmt.Sprintf("%d issue(s)", len(issues))})
 			toolTrace = append(toolTrace, fmt.Sprintf("fact_check_failed(%d issues)", len(issues)))
 
-			// 暴力重置上下文：fact-check 失败时只保留
+			// 重置上下文：fact-check 失败时只保留
 			//   1) baseMessages：[system, 历史 user/assistant（多轮会话已确认成果）, 本轮 user]
-			//   2) 第一次最终答案（assistant）—— 用 firstAnswer 锁住，不被后续修订替代
-			//   3) 本轮 issues 反馈（user）
-			// 中间所有 tool_calls / tool 回填 / 探索过程全部丢弃，但多轮历史成果保留。
-			// agent 重新跑会自己再调工具核实——丢的是错误探索路径，留的是事实坐标。
-			if firstAnswer == "" {
-				firstAnswer = content
-			}
+			//   2) 当次的 [assistant(最新答案), user(最新 issues)]——滚动更新，不累积历史修订链
+			// 丢弃的是本轮 agent 的 tool_calls / tool 回填（占地方的源码 dump 等探索过程），
+			// 也丢更早的修订对（A1/issues_1 等）。每次失败 messages 长度恒定 baseLen+2，token 不增长。
+			// agent 重新跑会再调工具核实——丢的是工具回填体积，留的是当次答案 + 错点指引。
 			messages = make([]map[string]any, 0, baseLen+2)
 			messages = append(messages, baseMessages...)
-			messages = append(messages, map[string]any{"role": "assistant", "content": firstAnswer})
-			messages = append(messages, map[string]any{
-				"role": "user",
-				"content": "上一轮回答中以下事实点未通过 codegraph 校验（可能函数不存在、调用关系不存在、文件路径不对）：\n\n" +
-					strings.Join(issues, "\n") +
-					"\n\n请使用工具重新核实这些点（必要时调用 search_symbol / find_callers / find_callees / read_source），" +
-					"然后给出修订版完整答案。不要保留任何未经核实的虚假事实——宁可说\"未在索引中找到\"也不要编造。",
-			})
+			messages = append(messages,
+				map[string]any{"role": "assistant", "content": content},
+				map[string]any{
+					"role": "user",
+					"content": "上一轮回答中以下事实点未通过 codegraph 校验（可能函数不存在、调用关系不存在、文件路径不对）：\n\n" +
+						strings.Join(issues, "\n") +
+						"\n\n请使用工具重新核实这些点（必要时调用 search_symbol / find_callers / find_callees / read_source），" +
+						"然后给出修订版完整答案。不要保留任何未经核实的虚假事实——宁可说\"未在索引中找到\"也不要编造。",
+				},
+			)
 			continue
 		}
 
