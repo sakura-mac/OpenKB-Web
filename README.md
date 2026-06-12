@@ -20,6 +20,7 @@ Go (Gin) 后端 + Vue 3 (Vite + TypeScript) 前端，前端编译后通过 `go:e
 - **可视化浏览**：Markdown 渲染 + 实体关系图谱，知识结构一目了然
 - **拖拽上传**：支持多文件拖拽、路径输入、服务器文件浏览器三种方式
 - **流式对话**：SSE 实时推送 LLM 回答，多轮会话持久化
+- **代码问答**：[CodeGraph](https://github.com/colbymchenry/codegraph) 索引 + Go 直调 LLM 的 agentic loop，支持 search/callers/callees/impact/read_source 5 类工具，可视化代码调用图谱浮层（按需展开 + 源码高亮）
 - **国际化**：中英双语，基于 IP/Accept-Language 自动检测，支持手动切换
 - **URL 文档智能标题**：添加 URL 文档时自动抓取网页 `<title>` 作为显示名
 - **Deck 幻灯片**：将知识库编译为 HTML 演示文稿，支持在线预览/下载
@@ -158,7 +159,7 @@ LLM_LANGUAGE=zh
                                     └──▶ LLM API (DeepSeek/OpenAI/Claude/Gemini)
 ```
 
-### 前端四大视图
+### 前端五大视图
 
 | 视图 | 功能 | 技术实现 |
 |------|------|----------|
@@ -166,6 +167,7 @@ LLM_LANGUAGE=zh
 | 📄 文档 | 路径添加 / 拖拽上传 / 文件浏览器 / 删除 | 异步 task 轮询 + URL 标题自动抓取 |
 | 🕸️ 图谱 | 实体关系可视化，类型过滤、搜索高亮 | Cytoscape.js 力导向布局 |
 | 💬 查询 | 多轮对话，会话持久化，SSE 流式输出 | OpenKB Agent SDK 桥接 |
+| 🧬 代码 | 代码库问答 + 实时构建调用图谱浮层 | CodeGraph CLI + Go agentic loop（OpenAI function-calling）|
 
 ### 后端模块
 
@@ -182,6 +184,11 @@ LLM_LANGUAGE=zh
 | 异步任务 | `internal/okb/task.go` | 内存 map + 定时清理 |
 | Git 提交 | `internal/okb/git.go` | 空间变更自动 commit |
 | 资源嵌入 | `internal/assets/assets.go` | chat_helper.py + skills 释放 |
+| 代码空间 | `internal/handler/codegraph.go` | 代码空间 CRUD + SSE 代码问答（agent 入口） |
+| 代码 Agent | `internal/handler/code_agent.go` | OpenAI function-calling agentic loop（5 类工具）+ 流式解析 |
+| 代码图谱 | `internal/handler/code_graph.go` | 按符号/文件+行精确定位邻居子图（callers/callees）+ 源码片段 |
+| 代码会话 | `internal/handler/code_session.go` | 代码问答多轮会话持久化（含图谱节点 + follow-ups） |
+| CodeGraph 桥接 | `internal/codegraph/codegraph.go` | CodeGraph CLI 调用封装 |
 
 ---
 
@@ -323,6 +330,21 @@ OKB_HOME=/path/to/custom ./okb-web
 | POST | `/api/chat/send` | 发送消息（异步 task） |
 | POST | `/api/chat/stream` | 发送消息（SSE 流式） |
 
+### 代码问答
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/code-spaces` | 列出已索引的代码空间 |
+| POST | `/api/code-spaces/create` | 注册代码空间 `{"name", "path"}` |
+| POST | `/api/code/sync` | 增量同步 CodeGraph 索引（异步 task） |
+| POST | `/api/code/stream` | SSE 流式代码问答（agentic：search/callers/callees/impact/read_source 5 工具）|
+| GET | `/api/code/sessions/:space` | 代码问答会话列表 |
+| GET | `/api/code/session/:space/:sid` | 加载会话（含每轮图谱节点 + follow-ups） |
+| DELETE | `/api/code/session/:space/:sid` | 删除代码会话 |
+| GET | `/api/code/suggestions/:space` | 提问卡片建议（LLM 生成 4 条） |
+| GET | `/api/code/graph/:space?symbol=X` | 以符号为中心的 1 跳邻居子图（callers + callees） |
+| GET | `/api/code/symbol/:space?name=X[&file=Y&line=N]` | 取符号源码片段（file+line 精确定位，避免同名误命中） |
+
 ### Deck 幻灯片
 
 | 方法 | 路径 | 说明 |
@@ -404,6 +426,10 @@ okb-web/
 │   ├── handler/
 │   │   ├── handler.go           # 空间/文档/Wiki/图谱/浏览/历史 handler
 │   │   ├── chat.go              # 多轮对话（SSE 流式 + 异步 task）
+│   │   ├── codegraph.go         # 代码空间 + SSE 代码问答 agent 入口
+│   │   ├── code_agent.go        # 代码 agentic loop（5 工具：search/callers/callees/impact/read_source）
+│   │   ├── code_graph.go        # 代码图谱按需邻居 + 符号源码（file+line 精确定位）
+│   │   ├── code_session.go      # 代码会话持久化 + follow-ups + 提问卡片
 │   │   ├── deck.go              # Deck 幻灯片生成/列表/预览/删除
 │   │   ├── locale.go            # IP/Accept-Language 语言自动检测
 │   │   └── urltitle.go          # URL 网页标题抓取 + 持久化
@@ -433,7 +459,10 @@ okb-web/
     │       ├── WikiView.vue     # 知识浏览（摘要/概念/实体）
     │       ├── DocsView.vue     # 文档管理（添加/上传/删除）
     │       ├── GraphView.vue    # 实体关系图谱（Cytoscape.js）
-    │       └── QueryView.vue    # 多轮对话（SSE 流式）
+    │       ├── QueryView.vue    # 多轮对话（SSE 流式）
+    │       └── CodeView.vue     # 代码问答（SSE agentic + 每轮图谱 chip + follow-ups）
+    ├── components/
+    │   └── CodeGraphPanel.vue   # 代码图谱浮层（cytoscape：单击聚焦 + 双击展开 + 源码高亮）
     ├── package.json
     └── vite.config.ts           # 开发代理 /api → :8901
 ```
@@ -496,6 +525,21 @@ make dev-frontend
 | 国际化 | 英文 | 中英双语自动检测 |
 | 部署 | 本地 Python 环境 | 单二进制，零依赖 |
 | 团队使用 | 每人各装一套 | 部署一次，浏览器访问 |
+
+### 代码问答
+
+文档问答之外，OKB Web 还把一个**代码库**当作"知识空间"来问答。流程：
+
+1. **索引**：注册代码空间 → 调 [CodeGraph](https://github.com/colbymchenry/codegraph) 把整个仓库构建成符号/调用图（本地 SQLite，零 LLM 调用）
+2. **问答**：前端发问题 → 后端 Go 直调 OpenAI 兼容 `/v1/chat/completions?stream=true` 跑 **agentic loop**（OpenAI function-calling），LLM 自主选择 5 类工具反复探索：
+   - `search_symbol`：模糊搜索符号
+   - `find_callers` / `find_callees`：查上下游调用关系
+   - `analyze_impact`：改动影响面
+   - `read_source`：按 path+行号精确读源码
+3. **持久化**：每轮问答保存 `question/answer/tools/graph/follow_ups`，会话历史可直接回放图谱 chip 与跟进问题
+4. **可视化**：右栏每个 chip 点击打开**代码图谱浮层**——以该符号为中心实时拉 callers + callees 子图（cytoscape），双击展开邻居动态长图，单击节点切中心刷边色（暖橙=调用方/冷青=被调用），源码语法高亮（复用 marked + highlight.js）
+
+不依赖 LiteLLM/Python，纯 Go + LLM API；CodeGraph 也是纯本地索引，无网络调用。模型支持 DeepSeek/OpenAI/Anthropic 等任何 OpenAI 兼容 endpoint。
 
 ### Bootstrap 自动安装
 
