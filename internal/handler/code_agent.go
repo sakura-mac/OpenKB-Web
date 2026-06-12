@@ -150,6 +150,7 @@ func runCodeAgent(ctx context.Context, model, baseURL, apiKey, workDir string, m
 	}
 
 	var toolTrace []string
+	factCheckedRounds := 0 // 事实校验重审次数，避免无限循环
 
 	// 不约束轮数：让 agent 一直探索直到自己给出最终答案（不再调工具）为止。
 	// 安全兜底靠请求上下文 ctx —— 客户端断连 / 超时会让网络请求失败而退出。
@@ -183,9 +184,33 @@ func runCodeAgent(ctx context.Context, model, baseURL, apiKey, workDir string, m
 			return "", toolTrace, graph, err
 		}
 
-		// 没有工具调用 → content 是最终答案
+		// 没有工具调用 → content 是最终答案。但先做事实校验：
+		// 让独立 LLM A1 从答案里抽出"声称的函数 / 调用关系"，逐条对照 codegraph 索引验证。
+		// 若有不实声明，把要点塞回对话让 agent 继续修订；通过才返回。
+		// factCheckedRounds 防止无限循环（最多重审 2 次）。
 		if len(toolCalls) == 0 {
-			return content, toolTrace, graph, nil
+			if factCheckedRounds >= 2 {
+				return content, toolTrace, graph, nil
+			}
+			factCheckedRounds++
+			issues := factCheckCodeAnswer(ctx, model, baseURL, apiKey, workDir, content)
+			if len(issues) == 0 {
+				return content, toolTrace, graph, nil
+			}
+			// 通知前端进入"事实校验未通过、重新生成"
+			emit(map[string]any{"event": "tool", "name": "fact_check_failed", "args": fmt.Sprintf("%d issue(s)", len(issues))})
+			toolTrace = append(toolTrace, fmt.Sprintf("fact_check_failed(%d issues)", len(issues)))
+
+			// 把 assistant 的（待修订）answer 入对话 + user 反馈不实点
+			messages = append(messages, map[string]any{"role": "assistant", "content": content})
+			messages = append(messages, map[string]any{
+				"role": "user",
+				"content": "上一轮回答中以下事实点未通过 codegraph 校验（可能函数不存在、调用关系不存在、文件路径不对）：\n\n" +
+					strings.Join(issues, "\n") +
+					"\n\n请使用工具重新核实这些点（必要时调用 search_symbol / find_callers / find_callees / read_source），" +
+					"然后给出修订版完整答案。不要保留任何未经核实的虚假事实——宁可说\"未在索引中找到\"也不要编造。",
+			})
+			continue
 		}
 
 		// 有工具调用：把 assistant(tool_calls) 加进对话，逐个执行并回灌结果
@@ -287,6 +312,131 @@ func collectGraphNode(name, argsJSON, resultJSON string, add func(category, name
 			add("file", filepath.Base(p), "")
 		}
 	}
+}
+
+// factCheckCodeAnswer 用独立 LLM 抽取答案中"声称的函数 / 调用关系"，
+// 逐条对照 codegraph 索引验证。返回未通过的"问题点"列表（中文短句），空列表 = 全过。
+//
+// 校验规则：
+//   - claim.kind="function"：name 必须能被 codegraph query 命中（含同名都算通过）
+//   - claim.kind="call"：caller 调 callee 必须在 codegraph callees(caller) 列表里
+// LLM 抽取失败、超时、空答案一律视为通过（fail-open，不阻塞主流程）。
+func factCheckCodeAnswer(ctx context.Context, model, baseURL, apiKey, workDir, answer string) []string {
+	if strings.TrimSpace(answer) == "" {
+		return nil
+	}
+	// 1) 让 A1 LLM 从答案里抽 claims（严格 JSON）
+	sys := `你是事实抽取器。从给定的代码分析回答里抽出"可被代码索引验证的事实声明"。
+严格输出一个 JSON 数组，每项形如：
+- 函数声明：{"kind":"function","name":"<函数名>","file":"<相对路径,可空>"}
+- 调用关系：{"kind":"call","caller":"<A>","callee":"<B>"}
+只抽答案明确陈述存在/调用的，不抽笼统描述。最多 8 条。
+不要 markdown，不要解释，直接 JSON 数组。回答里没事实声明则输出 []。`
+	raw, err := llmComplete(ctx, model, baseURL, apiKey, []map[string]string{
+		{"role": "system", "content": sys},
+		{"role": "user", "content": answer},
+	}, 512)
+	if err != nil {
+		return nil // fail-open
+	}
+	raw = strings.TrimSpace(raw)
+	// 兼容 ```json ... ``` 包裹
+	if i := strings.Index(raw, "["); i >= 0 {
+		if j := strings.LastIndex(raw, "]"); j > i {
+			raw = raw[i : j+1]
+		}
+	}
+	var claims []struct {
+		Kind   string `json:"kind"`
+		Name   string `json:"name"`
+		File   string `json:"file"`
+		Caller string `json:"caller"`
+		Callee string `json:"callee"`
+	}
+	if json.Unmarshal([]byte(raw), &claims) != nil || len(claims) == 0 {
+		return nil
+	}
+
+	var issues []string
+	pushed := map[string]bool{}
+	push := func(s string) {
+		if pushed[s] || len(issues) >= 8 {
+			return
+		}
+		pushed[s] = true
+		issues = append(issues, "- "+s)
+	}
+
+	type qNode struct {
+		Node struct {
+			Name     string `json:"name"`
+			FilePath string `json:"filePath"`
+		} `json:"node"`
+	}
+	type relList struct {
+		Callees []struct {
+			Name string `json:"name"`
+		} `json:"callees"`
+	}
+
+	for _, cl := range claims {
+		select {
+		case <-ctx.Done():
+			return issues
+		default:
+		}
+		switch cl.Kind {
+		case "function":
+			if cl.Name == "" {
+				continue
+			}
+			ok, out, _ := codegraph.Run(ctx, workDir, "query", cl.Name, "-j", "-l", "5")
+			if !ok || strings.TrimSpace(out) == "" || strings.TrimSpace(out) == "[]" {
+				push(fmt.Sprintf("声称的函数 `%s` 在 codegraph 索引中不存在", cl.Name))
+				continue
+			}
+			// 若答案里指了 file，校验是否有任一命中匹配该 file
+			if cl.File != "" {
+				var arr []qNode
+				if json.Unmarshal([]byte(strings.TrimSpace(out)), &arr) == nil {
+					hit := false
+					for _, it := range arr {
+						if strings.Contains(it.Node.FilePath, cl.File) || strings.Contains(cl.File, it.Node.FilePath) {
+							hit = true
+							break
+						}
+					}
+					if !hit {
+						push(fmt.Sprintf("函数 `%s` 存在但不在声称的文件 `%s` 中", cl.Name, cl.File))
+					}
+				}
+			}
+		case "call":
+			if cl.Caller == "" || cl.Callee == "" {
+				continue
+			}
+			ok, out, _ := codegraph.Run(ctx, workDir, "callees", cl.Caller, "-j")
+			if !ok {
+				push(fmt.Sprintf("无法获取 `%s` 的 callees 列表（可能 caller 不存在）", cl.Caller))
+				continue
+			}
+			var w relList
+			if json.Unmarshal([]byte(strings.TrimSpace(out)), &w) != nil {
+				continue
+			}
+			found := false
+			for _, c := range w.Callees {
+				if c.Name == cl.Callee {
+					found = true
+					break
+				}
+			}
+			if !found {
+				push(fmt.Sprintf("声称的调用关系 `%s` → `%s` 在 codegraph 中不存在", cl.Caller, cl.Callee))
+			}
+		}
+	}
+	return issues
 }
 
 // llmComplete 非流式调一次 chat/completions，返回 assistant 文本。
