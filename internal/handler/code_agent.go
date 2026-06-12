@@ -152,6 +152,17 @@ func runCodeAgent(ctx context.Context, model, baseURL, apiKey, workDir string, m
 
 	var toolTrace []string
 
+	// 记录 agent 第一次给出的"待修订答案"——fact-check 失败时所有重试轮都基于它修订，
+	// 而不是基于上一轮的修订答案（避免错误累积）。
+	var firstAnswer string
+
+	// 进 loop 时 messages 形如 [system, ...历史 user/assistant（已确认成果）, 本轮 user]，
+	// 这一段是修订基线：fact-check 失败时把它原样保留，只丢本轮新增的 tool_calls / tool 回填。
+	// 注意切片必须在进 loop 前就拍快照——append 可能复用底层数组，等 messages 增长后再切就拿不到原段了。
+	baseLen := len(messages)
+	baseMessages := make([]map[string]any, baseLen)
+	copy(baseMessages, messages)
+
 	// 不约束轮数：让 agent 一直探索直到自己给出最终答案（不再调工具）为止。
 	// 安全兜底靠请求上下文 ctx —— 客户端断连 / 超时会让网络请求失败而退出。
 	for {
@@ -216,8 +227,18 @@ func runCodeAgent(ctx context.Context, model, baseURL, apiKey, workDir string, m
 			emit(map[string]any{"event": "tool", "name": "fact_check_failed", "args": fmt.Sprintf("%d issue(s)", len(issues))})
 			toolTrace = append(toolTrace, fmt.Sprintf("fact_check_failed(%d issues)", len(issues)))
 
-			// 把 assistant 的（待修订）answer 入对话 + user 反馈不实点
-			messages = append(messages, map[string]any{"role": "assistant", "content": content})
+			// 暴力重置上下文：fact-check 失败时只保留
+			//   1) baseMessages：[system, 历史 user/assistant（多轮会话已确认成果）, 本轮 user]
+			//   2) 第一次最终答案（assistant）—— 用 firstAnswer 锁住，不被后续修订替代
+			//   3) 本轮 issues 反馈（user）
+			// 中间所有 tool_calls / tool 回填 / 探索过程全部丢弃，但多轮历史成果保留。
+			// agent 重新跑会自己再调工具核实——丢的是错误探索路径，留的是事实坐标。
+			if firstAnswer == "" {
+				firstAnswer = content
+			}
+			messages = make([]map[string]any, 0, baseLen+2)
+			messages = append(messages, baseMessages...)
+			messages = append(messages, map[string]any{"role": "assistant", "content": firstAnswer})
 			messages = append(messages, map[string]any{
 				"role": "user",
 				"content": "上一轮回答中以下事实点未通过 codegraph 校验（可能函数不存在、调用关系不存在、文件路径不对）：\n\n" +
