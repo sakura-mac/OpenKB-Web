@@ -33,7 +33,7 @@ interface SpaceChatState {
    *  历史消息不需要，避免持久化结构臃肿。 */
   trace: {
     tools: string[]
-    links: Array<{ category: string; name: string }>
+    links: Array<{ category: string; name: string; kind?: string }>
   }
   /** 按 assistant 消息下标存的逐轮思考过程。
    *  作用：让用户回看历史 assistant 消息时，每条都能看到自己那轮的工具时间轴 + 知识子图，
@@ -45,7 +45,7 @@ interface SpaceChatState {
    *  没存进 traces 的历史轮（来自 chatLoadSession 的回填消息）会在模板侧降级为即时 extractWikilinks(m.content)。 */
   traces: Record<number, {
     tools: string[]
-    links: Array<{ category: string; name: string }>
+    links: Array<{ category: string; name: string; kind?: string }>
   }>
 }
 

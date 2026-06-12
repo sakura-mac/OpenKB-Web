@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -148,8 +149,13 @@ func CodeGraphNeighbors(c *gin.Context) {
 	c.JSON(200, gin.H{"nodes": out, "edges": edges})
 }
 
-// CodeSymbolSource GET /api/code/symbol/:space?name=X
+// CodeSymbolSource GET /api/code/symbol/:space?name=X[&file=Y&line=N]
 // 返回某符号的源码片段 + 元数据（点击图谱节点时展示）。
+//
+// 优先按 file+line 精确定位（前端图谱节点自带这俩字段，直接传过来）；
+// 没传或定位失败再退回 name 模糊匹配。
+// 前者修复了「点击节点 g 却显示 get_groups」的问题——codegraph query 是模糊搜索，
+// 同名/前缀符号会被错排，必须用精确坐标避免错配。
 func CodeSymbolSource(c *gin.Context) {
 	cs, err := readCodeSpace(c.Param("space"))
 	if err != nil {
@@ -161,10 +167,13 @@ func CodeSymbolSource(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "缺少 name"})
 		return
 	}
+	file := strings.TrimSpace(c.Query("file"))
+	lineStr := strings.TrimSpace(c.Query("line"))
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
 	defer cancel()
 
-	ok, out, _ := codegraph.Run(ctx, cs.Path, "query", name, "-j", "-l", "1")
+	// 先按 file 路径筛 query 结果；命中精确文件 + 行号的 → 用之
+	ok, out, _ := codegraph.Run(ctx, cs.Path, "query", name, "-j", "-l", "20")
 	if !ok {
 		c.JSON(200, gin.H{"found": false})
 		return
@@ -174,7 +183,30 @@ func CodeSymbolSource(c *gin.Context) {
 		c.JSON(200, gin.H{"found": false})
 		return
 	}
-	nd := items[0].Node
+
+	// 精确匹配优先：file 完全等于 + （有 line 时）startLine 等于
+	pickIdx := 0
+	if file != "" {
+		var line int
+		fmt.Sscanf(lineStr, "%d", &line)
+		bestIdx := -1
+		for i, it := range items {
+			if it.Node.FilePath != file {
+				continue
+			}
+			if line > 0 && it.Node.StartLine == line {
+				bestIdx = i
+				break
+			}
+			if bestIdx < 0 {
+				bestIdx = i // file 命中，line 不强求时记下第一个
+			}
+		}
+		if bestIdx >= 0 {
+			pickIdx = bestIdx
+		}
+	}
+	nd := items[pickIdx].Node
 	end := nd.EndLine
 	if end < nd.StartLine {
 		end = nd.StartLine + 80

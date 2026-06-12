@@ -37,7 +37,7 @@ export const api = {
       `/api/code/sessions/${encodeURIComponent(space)}`,
     ),
   codeLoadSession: (space: string, sid: string) =>
-    request<{ ok: boolean; session_id?: string; title?: string; messages?: Array<{ role: string; content: string; tools?: string[]; graph?: Array<{ category: string; name: string }>; follow_ups?: string[] }>; error?: string }>(
+    request<{ ok: boolean; session_id?: string; title?: string; messages?: Array<{ role: string; content: string; tools?: string[]; graph?: Array<{ category: string; name: string; kind?: string }>; follow_ups?: string[] }>; error?: string }>(
       `/api/code/session/${encodeURIComponent(space)}/${encodeURIComponent(sid)}`,
     ),
   codeDeleteSession: (space: string, sid: string) =>
@@ -51,11 +51,17 @@ export const api = {
     request<{ nodes: Array<{ id: string; label: string; kind: string; file?: string; line?: number; is_center?: boolean }>; edges: Array<{ source: string; target: string; type: string }> }>(
       `/api/code/graph/${encodeURIComponent(space)}?symbol=${encodeURIComponent(symbol)}`,
     ),
-  // 点击图谱节点：取该符号的源码片段
-  codeSymbolSource: (space: string, name: string) =>
-    request<{ found: boolean; name?: string; kind?: string; qualified?: string; file?: string; start_line?: number; end_line?: number; docstring?: string; code?: string }>(
-      `/api/code/symbol/${encodeURIComponent(space)}?name=${encodeURIComponent(name)}`,
-    ),
+  // 点击图谱节点：取该符号的源码片段。
+  // 传 file+line 精确坐标（节点自带）—— codegraph query 是模糊匹配，
+  // 同名/前缀符号会按 score 错排，必须用 (file, startLine) 锁定才能保真。
+  codeSymbolSource: (space: string, name: string, file?: string, line?: number) => {
+    const qs = new URLSearchParams({ name })
+    if (file) qs.set('file', file)
+    if (line && line > 0) qs.set('line', String(line))
+    return request<{ found: boolean; name?: string; kind?: string; qualified?: string; file?: string; start_line?: number; end_line?: number; docstring?: string; code?: string }>(
+      `/api/code/symbol/${encodeURIComponent(space)}?${qs.toString()}`,
+    )
+  },
   wikiPage: (space: string, category: string, page: string) =>
     request<{ content?: string; error?: string }>(
       `/api/wiki/${encodeURIComponent(space)}/${encodeURIComponent(category)}/${encodeURIComponent(page)}`,

@@ -145,7 +145,8 @@
                   >
                     <span class="gc-dot"></span>
                     <span class="gc-name">{{ l.name }}</span>
-                    <span class="gc-cat">{{ l.category === 'file' ? t('code.catFile') : t('code.catSymbol') }}</span>
+                    <span v-if="l.kind" class="gc-kind">{{ kindLabel(l.kind) }}</span>
+                    <span class="gc-cat">{{ catLabel(l.category) }}</span>
                   </li>
                 </ul>
               </div>
@@ -238,7 +239,39 @@ const lastAssistantIdx = computed(() => {
 })
 
 function getTools(i: number): string[] { return chatState.traces[i]?.tools || [] }
-function getLinks(i: number): Array<{ category: string; name: string }> { return chatState.traces[i]?.links || [] }
+function getLinks(i: number): Array<{ category: string; name: string; kind?: string }> { return chatState.traces[i]?.links || [] }
+// 图谱节点类别标签（agent 工具按动作分 5 类）
+function catLabel(c: string): string {
+  switch (c) {
+    case 'search':  return t('code.catSearch')
+    case 'callers': return t('code.catCallers')
+    case 'callees': return t('code.catCallees')
+    case 'impact':  return t('code.catImpact')
+    case 'file':    return t('code.catFile')
+    default:        return t('code.catSymbol')
+  }
+}
+// 符号 kind 标签（codegraph 返回的 kind 字段）
+function kindLabel(k: string): string {
+  const map: Record<string, string> = {
+    function: t('code.kindFunction'),
+    method:   t('code.kindMethod'),
+    class:    t('code.kindClass'),
+    interface: t('code.kindInterface'),
+    struct:   t('code.kindStruct'),
+    trait:    t('code.kindTrait'),
+    enum:     t('code.kindEnum'),
+    constant: t('code.kindConstant'),
+    const:    t('code.kindConstant'),
+    variable: t('code.kindVariable'),
+    var:      t('code.kindVariable'),
+    field:    t('code.kindField'),
+    property: t('code.kindField'),
+    type:     t('code.kindType'),
+    module:   t('code.kindModule'),
+  }
+  return map[k.toLowerCase()] || k
+}
 
 // 进行中这一轮的工具调用列表（loading 小框里滚动展示，累积不刷掉）
 const liveTools = computed(() => (querying.value ? chatState.trace.tools : []))
@@ -718,8 +751,13 @@ onUnmounted(() => {
 }
 .graph-chip:hover { border-color: var(--ink); background: var(--paper-2); transform: translateX(2px); }
 .gc-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: #5566a0; }
-.graph-chip.file .gc-dot { background: #7a8a4a; }
+.graph-chip.search  .gc-dot { background: #8a8a8a; }   /* 搜索：中性灰 */
+.graph-chip.callers .gc-dot { background: #d97a3a; }   /* 调用方：暖橙 */
+.graph-chip.callees .gc-dot { background: #3a7a8c; }   /* 被调用：冷青 */
+.graph-chip.impact  .gc-dot { background: #c8302e; }   /* 影响面：朱红 */
+.graph-chip.file    .gc-dot { background: #7a8a4a; }   /* 源文件：苔绿 */
 .gc-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gc-kind { font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-2); flex-shrink: 0; padding: 1px 5px; border: 1px solid var(--paper-edge); background: var(--paper-2); }
 .gc-cat { font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-4); flex-shrink: 0; }
 
 /* right col */

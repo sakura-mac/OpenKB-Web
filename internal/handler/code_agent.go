@@ -129,20 +129,24 @@ func runCodeAgent(ctx context.Context, model, baseURL, apiKey, workDir string, m
 
 	tools := codeAgentTools()
 
-	// 收集 agent 探索过的图谱节点（符号/文件），done 时给前端画 MiniGraph。
+	// 收集 agent 探索过的图谱节点（含 kind），done 时给前端画 chip。
 	var graph []map[string]string
 	graphSeen := map[string]bool{}
-	addGraph := func(category, name string) {
+	addGraph := func(category, name, kind string) {
 		name = strings.TrimSpace(name)
 		if name == "" {
 			return
 		}
 		key := category + "/" + name
-		if graphSeen[key] || len(graph) >= 12 {
+		if graphSeen[key] || len(graph) >= 24 {
 			return
 		}
 		graphSeen[key] = true
-		graph = append(graph, map[string]string{"category": category, "name": name})
+		node := map[string]string{"category": category, "name": name}
+		if kind != "" {
+			node["kind"] = kind
+		}
+		graph = append(graph, node)
 	}
 
 	var toolTrace []string
@@ -201,8 +205,8 @@ func runCodeAgent(ctx context.Context, model, baseURL, apiKey, workDir string, m
 				"args":  truncateText(tc.Args, 120),
 			})
 			toolTrace = append(toolTrace, fmt.Sprintf("%s(%s)", tc.Name, truncateText(tc.Args, 80)))
-			collectGraphNode(tc.Name, tc.Args, addGraph)
 			result := executeCodeTool(ctx, workDir, tc.Name, tc.Args)
+			collectGraphNode(tc.Name, tc.Args, result, addGraph) // 用 result 解析 kind
 			messages = append(messages, map[string]any{
 				"role":         "tool",
 				"tool_call_id": tc.ID,
@@ -212,8 +216,12 @@ func runCodeAgent(ctx context.Context, model, baseURL, apiKey, workDir string, m
 	}
 }
 
-// collectGraphNode 从一次工具调用的参数里抽取图谱节点（符号 / 文件）。
-func collectGraphNode(name, argsJSON string, add func(category, name string)) {
+// collectGraphNode 从一次工具调用的参数 + 返回结果里抽取图谱节点。
+// category 细分到具体动作；kind 来自 codegraph 返回的符号 kind（function/method/class/...）。
+//   - search：search_symbol 的搜索目标 + 命中的前几个符号
+//   - callers / callees / impact：中心符号 + 关系结果中的符号
+//   - file：read_source 读取过的源文件
+func collectGraphNode(name, argsJSON, resultJSON string, add func(category, name, kind string)) {
 	var args map[string]any
 	if argsJSON != "" {
 		_ = json.Unmarshal([]byte(argsJSON), &args)
@@ -224,15 +232,59 @@ func collectGraphNode(name, argsJSON string, add func(category, name string)) {
 		}
 		return ""
 	}
+	type rawNode struct {
+		Kind string `json:"kind"`
+		Name string `json:"name"`
+	}
+	type qItem struct {
+		Node rawNode `json:"node"`
+	}
+	body := strings.TrimSpace(resultJSON)
+
 	switch name {
 	case "search_symbol":
-		add("symbol", str("query"))
-	case "find_callers", "find_callees", "analyze_impact":
-		add("symbol", str("symbol"))
+		add("search", str("query"), "")
+		var arr []qItem
+		if json.Unmarshal([]byte(body), &arr) == nil {
+			for i, it := range arr {
+				if i >= 6 || it.Node.Name == "" {
+					break
+				}
+				add("search", it.Node.Name, it.Node.Kind)
+			}
+		}
+	case "find_callers":
+		add("callers", str("symbol"), "")
+		var w struct {
+			Callers []rawNode `json:"callers"`
+		}
+		if json.Unmarshal([]byte(body), &w) == nil {
+			for i, n := range w.Callers {
+				if i >= 6 || n.Name == "" {
+					break
+				}
+				add("callers", n.Name, n.Kind)
+			}
+		}
+	case "find_callees":
+		add("callees", str("symbol"), "")
+		var w struct {
+			Callees []rawNode `json:"callees"`
+		}
+		if json.Unmarshal([]byte(body), &w) == nil {
+			for i, n := range w.Callees {
+				if i >= 6 || n.Name == "" {
+					break
+				}
+				add("callees", n.Name, n.Kind)
+			}
+		}
+	case "analyze_impact":
+		add("impact", str("symbol"), "")
 	case "read_source":
 		p := str("path")
 		if p != "" {
-			add("file", filepath.Base(p))
+			add("file", filepath.Base(p), "")
 		}
 	}
 }

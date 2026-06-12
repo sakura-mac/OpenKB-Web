@@ -138,31 +138,34 @@ const STYLE: any[] = [
       'text-valign': 'bottom', 'text-margin-y': 5,
       'text-outline-color': '#f5f0e6', 'text-outline-width': 3,
       'text-wrap': 'ellipsis', 'text-max-width': '110px', 'min-zoomed-font-size': 6,
+      // 默认（other 类，对应图例"其它"）：苔绿圆角
       'background-color': '#5b6f3f', width: 16, height: 16,
       shape: 'round-rectangle', 'border-width': 1, 'border-color': '#1a1814',
   }},
+  // 函数 / 方法（对应图例"函数/方法"）：靛蓝椭圆
   { selector: 'node[kind="function"], node[kind="method"], node[kind="func"]', style: {
       'background-color': '#2d4a6b', width: 20, height: 20, shape: 'ellipse',
   }},
+  // 类型（class/interface/struct/trait/enum）：墨色菱形
   { selector: 'node[kind="class"], node[kind="interface"], node[kind="struct"], node[kind="trait"], node[kind="enum"]', style: {
       'background-color': '#1a1814', width: 18, height: 18, shape: 'diamond',
   }},
-  { selector: 'node[?center]', style: {
-      'background-color': '#c8302e', width: 30, height: 30,
-      'font-size': '12px', 'font-weight': 700, 'border-width': 1.5,
-  }},
-  { selector: 'node:selected', style: { 'border-width': 2.5, 'border-color': '#c8302e' } },
+  // 选中态：墨色细边
+  { selector: 'node:selected', style: { 'border-width': 2, 'border-color': '#1a1814' } },
   { selector: 'edge', style: {
-      width: 1, 'line-color': 'rgba(26,24,20,0.28)',
-      'target-arrow-shape': 'triangle', 'target-arrow-color': 'rgba(26,24,20,0.4)',
-      'arrow-scale': 0.7, 'curve-style': 'bezier', opacity: 0.6,
+      width: 1.6, 'line-color': 'rgba(26,24,20,0.4)',
+      'target-arrow-shape': 'triangle', 'target-arrow-color': 'rgba(26,24,20,0.5)',
+      'arrow-scale': 1.4, 'curve-style': 'bezier', opacity: 0.85,
   }},
-  { selector: 'edge[type="caller"]', style: { 'line-color': '#7a8a4a', 'target-arrow-color': '#7a8a4a' } },
-  { selector: 'edge[type="callee"]', style: { 'line-color': '#5566a0', 'target-arrow-color': '#5566a0' } },
-  { selector: '.highlight', style: { 'border-width': 2.5, 'border-color': '#c8302e', 'font-size': '12px', 'font-weight': 600, 'z-index': 999 } },
-  { selector: '.neighbor', style: { 'border-color': 'rgba(200,48,46,0.4)', 'border-width': 1.5, opacity: 0.9 } },
-  { selector: 'edge.highlight', style: { 'line-color': '#c8302e', 'target-arrow-color': '#c8302e', width: 1.6, opacity: 0.9 } },
-  { selector: '.search-match', style: { 'border-width': 2.5, 'border-color': '#c8302e' } },
+  // caller → 中心（"传入"，调用方）：暖橙
+  { selector: 'edge.e-caller', style: { 'line-color': '#d97a3a', 'target-arrow-color': '#d97a3a', width: 1.8 } },
+  // 中心 → callee（"传出"，被调用）：冷青
+  { selector: 'edge.e-callee', style: { 'line-color': '#3a7a8c', 'target-arrow-color': '#3a7a8c', width: 1.8 } },
+  // 高亮态：放大字号 + 提层级，不加额外染色
+  { selector: '.highlight', style: { 'font-size': '12px', 'font-weight': 600, 'z-index': 999 } },
+  { selector: '.neighbor', style: { opacity: 0.95 } },
+  { selector: 'edge.highlight', style: { width: 2.4, opacity: 1 } },
+  { selector: '.search-match', style: { 'font-weight': 700, 'z-index': 999 } },
   { selector: '.dimmed', style: { opacity: 0.16 } },
   { selector: 'edge.dimmed', style: { opacity: 0.05 } },
   { selector: '.hidden', style: { display: 'none' } },
@@ -184,17 +187,27 @@ async function fetchNeighbors(symbol: string, isSeed = false) {
     cy.nodes().forEach(n => { willHave.add(n.id()) })
     for (const n of res.nodes || []) {
       if (cy.getElementById(n.id).length === 0) {
-        toAdd.push({ group: 'nodes', data: { id: n.id, label: n.label, kind: n.kind, file: n.file, line: n.line, center: n.is_center ? 1 : undefined } })
+        // 不存 center 字段——切换中心时旧节点会残留 center=1，统一靠 reclassifyEdges 处理边色
+        toAdd.push({ group: 'nodes', data: { id: n.id, label: n.label, kind: n.kind, file: n.file, line: n.line } })
       }
       willHave.add(n.id)
     }
     const edgeSeen = new Set<string>()
     for (const e of res.edges || []) {
       const eid = `${e.source}->${e.target}`
-      if (edgeSeen.has(eid) || cy.getElementById(eid).length > 0) continue
-      if (!willHave.has(e.source) || !willHave.has(e.target)) continue // 端点缺失则跳过，避免整批失败
+      if (edgeSeen.has(eid)) continue
+      if (!willHave.has(e.source) || !willHave.has(e.target)) continue // 端点缺失则跳过
       edgeSeen.add(eid)
-      toAdd.push({ group: 'edges', data: { id: eid, source: e.source, target: e.target, type: e.type } })
+      const cls = e.type === 'caller' ? 'e-caller' : e.type === 'callee' ? 'e-callee' : ''
+      const existing = cy.getElementById(eid)
+      if (existing.length > 0) {
+        // 边已存在但中心切换后语义可能变了（同一条边相对新旧中心一个是 caller 一个是 callee）。
+        // 必须重置 class，否则连线保持旧颜色——这就是"中心转换颜色没跟上"的根因。
+        existing.removeClass('e-caller e-callee')
+        if (cls) existing.addClass(cls)
+        continue
+      }
+      toAdd.push({ group: 'edges', data: { id: eid, source: e.source, target: e.target }, classes: cls })
     }
     cy.add(toAdd)
     refreshGroups()
@@ -205,28 +218,63 @@ async function fetchNeighbors(symbol: string, isSeed = false) {
   }
 }
 
-// 单击：聚焦该节点 = 锁定高亮 + concentric 围绕它 + 拉源码（不 toggle 解锁，解锁交给点空白）
+// 以指定节点为新中心，重新刷所有边的 caller/callee class（不重拉数据）。
+// 切换中心后，每条边相对中心的语义角色会变（同一条边对 A 是 callee，对 B 可能是 caller），
+// 颜色必须跟着切。靠边的 source/target 与新中心 id 推断方向：
+//   - 边的 target == 中心 → 该边是 caller（外部 → 中心）
+//   - 边的 source == 中心 → 该边是 callee（中心 → 外部）
+//   - 与中心无直接关联的边 → 清空 class，走默认灰
+function reclassifyEdges(centerId: string) {
+  if (!cy) return
+  cy.edges().forEach(e => {
+    e.removeClass('e-caller e-callee')
+    const s = e.data('source'); const t = e.data('target')
+    if (t === centerId) e.addClass('e-caller')
+    else if (s === centerId) e.addClass('e-callee')
+  })
+}
+
+// 单击：聚焦该节点 = 锁定 + concentric + 拉源码 + 刷边色
 async function focusNode(node: any) {
   const id = node.id()
   locked = id
+  reclassifyEdges(id) // 中心切换 → 同步重打边的 caller/callee 颜色
   relayoutAround(node)
   hoverInfo.value = nodeInfo(node)
   loadSource(id)
 }
 
-// 双击：先展开邻居（已展开则跳过 API），再 concentric 聚焦
+// 双击：先展开邻居（已展开则跳过 API），再以新中心刷边色 + concentric 聚焦
 async function expandNode(symbol: string) {
   await fetchNeighbors(symbol)
   if (!cy) return
   const node = cy.getElementById(symbol)
-  if (node && node.length) { locked = symbol; relayoutAround(node); hoverInfo.value = nodeInfo(node) }
+  if (node && node.length) {
+    locked = symbol
+    reclassifyEdges(symbol)
+    relayoutAround(node)
+    hoverInfo.value = nodeInfo(node)
+  }
 }
 
+// 拉某符号的源码到右栏。
+// 正确性靠"用 file+line 精确坐标查后端"——节点自带 codegraph 给的 filePath/startLine，
+// 后端按 (file, startLine) 锁定具体符号，不会被同名/前缀符号顶替（如 "g" 误命中 "get_groups"）。
 async function loadSource(symbol: string) {
   srcLoading.value = true
   source.value = null
+  let file: string | undefined
+  let line: number | undefined
+  if (cy) {
+    const node = cy.getElementById(symbol)
+    if (node && node.length) {
+      const f = node.data('file'); const l = node.data('line')
+      if (typeof f === 'string' && f) file = f
+      if (typeof l === 'number' && l > 0) line = l
+    }
+  }
   try {
-    source.value = await api.codeSymbolSource(props.space, symbol)
+    source.value = await api.codeSymbolSource(props.space, symbol, file, line)
   } catch {
     source.value = { found: false }
   } finally {
@@ -294,7 +342,8 @@ function relayoutAround(node: any) {
     animationDuration: 520,
     fit: false,
   } as any).run()
-  highlight(node)
+  // 不在这里 highlight——避免初始/切换中心时把整片邻域染红，让 caller/callee 语义色保持可读。
+  // 高亮只由用户主动 hover/单击触发。
   setTimeout(() => { cy?.animate({ fit: { eles: hood, padding: 70 } }, { duration: 440 }) }, 530)
 }
 
@@ -367,7 +416,12 @@ onMounted(async () => {
 
   await fetchNeighbors(props.seed, true)
   const seedNode = cy.getElementById(props.seed)
-  if (seedNode && seedNode.length) { locked = props.seed; relayoutAround(seedNode); hoverInfo.value = nodeInfo(seedNode) }
+  if (seedNode && seedNode.length) {
+    locked = props.seed
+    reclassifyEdges(props.seed) // 初始以 seed 为中心刷边色
+    relayoutAround(seedNode)
+    hoverInfo.value = nodeInfo(seedNode)
+  }
   loadSource(props.seed)
 })
 
@@ -431,9 +485,9 @@ onUnmounted(() => { if (cy) { cy.destroy(); cy = null } })
 .ci-hint { margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--paper-edge); font-family: var(--font-display); font-style: italic; font-size: 11px; color: var(--ink-4); }
 
 .cgp-legend { position: absolute; bottom: 10px; left: 12px; display: flex; gap: 14px; align-items: center; font-family: var(--font-mono); font-size: 10px; color: var(--ink-3); background: rgba(255,252,244,0.85); padding: 4px 8px; }
-.cgp-legend .lg { display: inline-block; width: 10px; height: 2px; margin-right: 4px; vertical-align: middle; }
-.lg-caller { background: #7a8a4a; }
-.lg-callee { background: #5566a0; }
+.cgp-legend .lg { display: inline-block; width: 14px; height: 3px; margin-right: 5px; vertical-align: middle; }
+.lg-caller { background: #d97a3a; }
+.lg-callee { background: #3a7a8c; }
 .cgp-tip { color: var(--ink-4); }
 .cgp-source { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--paper-2); }
 .cgp-src-head { padding: 12px 16px; border-bottom: 1px solid var(--paper-edge); }
