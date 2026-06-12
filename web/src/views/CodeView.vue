@@ -470,9 +470,17 @@ async function doSend() {
         answerText = ''; charCount = 0; chatState.streamingChars = 0
         const note = `${ev.name}(${(ev.args || '').slice(0, 80)})`
         if (chatState.activeAsstIdx === assistantIdx) chatState.trace.tools.push(note)
-        // 事实校验未通过事件：换更友好的中文提示，让用户知道在「重审 + 修订」
-        if (ev.name === 'fact_check_failed') {
+        // 事实校验三态 + 上下文压缩两态：都给可见提示
+        if (ev.name === 'fact_check') {
+          thinkingMsg.value = t('code.factCheckRunning')
+        } else if (ev.name === 'fact_check_passed') {
+          thinkingMsg.value = t('code.factCheckPassed')
+        } else if (ev.name === 'fact_check_failed') {
           thinkingMsg.value = t('code.factCheckRetry')
+        } else if (ev.name === 'context_compress') {
+          thinkingMsg.value = t('code.contextCompressing')
+        } else if (ev.name === 'context_compressed') {
+          thinkingMsg.value = t('code.contextCompressed')
         } else {
           thinkingMsg.value = t('query.toolRunning', { name: ev.name || '?' })
         }

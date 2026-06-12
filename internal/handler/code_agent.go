@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"okb-web/internal/codegraph"
@@ -150,13 +151,24 @@ func runCodeAgent(ctx context.Context, model, baseURL, apiKey, workDir string, m
 	}
 
 	var toolTrace []string
-	factCheckedRounds := 0 // 事实校验重审次数，避免无限循环
 
 	// 不约束轮数：让 agent 一直探索直到自己给出最终答案（不再调工具）为止。
 	// 安全兜底靠请求上下文 ctx —— 客户端断连 / 超时会让网络请求失败而退出。
 	for {
 		if err := ctx.Err(); err != nil {
 			return "", toolTrace, graph, err
+		}
+		// 上下文体积管控：消息总 token 估算 > 模型容量 60% 就压缩历史，避免 LLM 拒绝请求。
+		// 压缩策略：保留 system + 最近 6 条对话，中间的工具回填合成 1 条精简摘要塞回去。
+		if estimateMessagesTokens(messages) > contextBudget(model)*60/100 {
+			emit(map[string]any{"event": "tool", "name": "context_compress", "args": fmt.Sprintf("%d msgs", len(messages))})
+			toolTrace = append(toolTrace, fmt.Sprintf("context_compress(%d msgs)", len(messages)))
+			compressed, err := compressMessages(ctx, model, baseURL, apiKey, messages)
+			if err == nil && len(compressed) > 0 && len(compressed) < len(messages) {
+				messages = compressed
+				emit(map[string]any{"event": "tool", "name": "context_compressed", "args": fmt.Sprintf("→ %d msgs", len(messages))})
+				toolTrace = append(toolTrace, fmt.Sprintf("context_compressed(→%d msgs)", len(messages)))
+			}
 		}
 		reqBody := map[string]any{
 			"model":    actualModel,
@@ -188,16 +200,19 @@ func runCodeAgent(ctx context.Context, model, baseURL, apiKey, workDir string, m
 		// 让独立 LLM A1 从答案里抽出"声称的函数 / 调用关系"，逐条对照 codegraph 索引验证。
 		// 若有不实声明，把要点塞回对话让 agent 继续修订；通过才返回。
 		// factCheckedRounds 防止无限循环（最多重审 2 次）。
+		// 没有工具调用 → content 是最终答案。但先做事实校验：
+		// 让独立 LLM A1 从答案里抽出"声称的函数 / 调用关系"，逐条对照 codegraph 索引验证。
+		// 若有不实声明，把要点塞回对话让 agent 继续修订；通过才返回。
+		// 不约束次数——校验一直跑到通过为止，靠请求 ctx 兜底（断连/超时退出）。
 		if len(toolCalls) == 0 {
-			if factCheckedRounds >= 2 {
-				return content, toolTrace, graph, nil
-			}
-			factCheckedRounds++
+			emit(map[string]any{"event": "tool", "name": "fact_check", "args": ""})
+			toolTrace = append(toolTrace, "fact_check")
 			issues := factCheckCodeAnswer(ctx, model, baseURL, apiKey, workDir, content)
 			if len(issues) == 0 {
+				emit(map[string]any{"event": "tool", "name": "fact_check_passed", "args": ""})
+				toolTrace = append(toolTrace, "fact_check_passed")
 				return content, toolTrace, graph, nil
 			}
-			// 通知前端进入"事实校验未通过、重新生成"
 			emit(map[string]any{"event": "tool", "name": "fact_check_failed", "args": fmt.Sprintf("%d issue(s)", len(issues))})
 			toolTrace = append(toolTrace, fmt.Sprintf("fact_check_failed(%d issues)", len(issues)))
 
@@ -321,6 +336,131 @@ func collectGraphNode(name, argsJSON, resultJSON string, add func(category, name
 //   - claim.kind="function"：name 必须能被 codegraph query 命中（含同名都算通过）
 //   - claim.kind="call"：caller 调 callee 必须在 codegraph callees(caller) 列表里
 // LLM 抽取失败、超时、空答案一律视为通过（fail-open，不阻塞主流程）。
+// ============================================================
+// 上下文压缩
+//
+// agent loop 多轮后 messages 会膨胀（工具回填的源码 + JSON 关系动辄上千 token），
+// 一旦超过模型上下文容量 LLM 直接拒。这里用估算 + 阈值（60%）+ 总结压缩。
+// ============================================================
+
+// contextBudget 返回上下文容量（token）估值。
+// 统一按 1M 来——DeepSeek-V4 默认 chat 已经 1M，主流国产/Kimi 也都到 1M；
+// 老模型超额时 LLM 端会自己拒，估算这里不再做模型族区分。
+// 可用环境变量 LLM_CONTEXT_TOKENS 强制覆盖（整数 token 数）。
+func contextBudget(model string) int {
+	if v := os.Getenv("LLM_CONTEXT_TOKENS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 1000000
+}
+
+// estimateMessagesTokens 粗估 messages 总 token 数。
+// 用 4 字符/token 的保守估算（中文 ~2 字符/token，英文 ~4，混合取 3 偏紧）；
+// 不引依赖、不调 tokenizer，足够触发阈值判断。
+func estimateMessagesTokens(messages []map[string]any) int {
+	total := 0
+	for _, m := range messages {
+		if c, ok := m["content"].(string); ok {
+			total += len(c) / 3
+		}
+		// tool_calls / tool_call_id / role 等 JSON 开销
+		total += 16
+		if tc, ok := m["tool_calls"]; ok {
+			b, _ := json.Marshal(tc)
+			total += len(b) / 3
+		}
+	}
+	return total
+}
+
+// compressMessages 把超长的对话历史压缩：
+//   - 保留 system（messages[0]）
+//   - 保留最近 ~6 条对话（让 agent 接着干当前任务），但边界必须对齐到 user 消息——
+//     OpenAI 协议要求 assistant{tool_calls} → tool{tool_call_id} 严格成对，
+//     不能从中间切开，否则报 "An assistant message with 'tool_calls' must be followed by tool messages"
+//   - 中间段用独立 LLM 总结成 1 条精简 user 摘要塞回（agent 视角的"之前查过什么、知道了什么"）
+func compressMessages(ctx context.Context, model, baseURL, apiKey string, messages []map[string]any) ([]map[string]any, error) {
+	if len(messages) <= 8 {
+		return messages, nil
+	}
+	const keepRecentTarget = 6
+	// 从后往前找一个 user 消息作为 recent 起点，确保不会切散 tool_calls 配对
+	startRecent := len(messages) - keepRecentTarget
+	if startRecent < 1 {
+		startRecent = 1
+	}
+	for startRecent > 1 {
+		role, _ := messages[startRecent]["role"].(string)
+		if role == "user" {
+			break
+		}
+		startRecent--
+	}
+	if startRecent <= 1 {
+		return messages, nil // 没什么可压缩的
+	}
+	systemMsg := messages[0]
+	middle := messages[1:startRecent]
+	recent := messages[startRecent:]
+	if len(middle) == 0 {
+		return messages, nil
+	}
+
+	// 把中间段拼成可读文本喂给压缩 LLM
+	var sb strings.Builder
+	for _, m := range middle {
+		role, _ := m["role"].(string)
+		content, _ := m["content"].(string)
+		if content == "" {
+			if tc, ok := m["tool_calls"]; ok {
+				b, _ := json.Marshal(tc)
+				content = string(b)
+			}
+		}
+		sb.WriteString("[")
+		sb.WriteString(role)
+		sb.WriteString("] ")
+		sb.WriteString(truncateText(content, 1200))
+		sb.WriteString("\n\n")
+	}
+
+	sys := `你是上下文压缩器。下面是一段 agent 探索代码库的中间过程（含工具调用和返回）。
+把它压缩成一段中文要点摘要，让另一个 agent 接着干活时知道「之前查过什么、知道了什么、还差什么」。
+要求：
+- ≤ 600 字
+- 列出关键已知事实（函数名、调用关系、文件路径），不要笼统描述
+- 列出已尝试但无结果的探索方向（避免重复查）
+- 不要 markdown 标题，纯文本要点列表
+- 只输出摘要，不要任何前后缀`
+
+	summary, err := llmComplete(ctx, model, baseURL, apiKey, []map[string]string{
+		{"role": "system", "content": sys},
+		{"role": "user", "content": sb.String()},
+	}, 1024)
+	if err != nil {
+		return messages, err
+	}
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return messages, fmt.Errorf("empty summary")
+	}
+
+	out := make([]map[string]any, 0, 2+len(recent))
+	out = append(out, systemMsg)
+	out = append(out, map[string]any{
+		"role":    "user",
+		"content": "【上文压缩摘要】\n" + summary + "\n\n请基于以上摘要 + 后面新对话继续作答。",
+	})
+	out = append(out, recent...)
+	return out, nil
+}
+
+// ============================================================
+// 事实校验
+// ============================================================
+
 func factCheckCodeAnswer(ctx context.Context, model, baseURL, apiKey, workDir, answer string) []string {
 	if strings.TrimSpace(answer) == "" {
 		return nil
