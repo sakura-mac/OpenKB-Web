@@ -67,6 +67,13 @@ type CodeQueryReq struct {
 	Question string `json:"question" binding:"required"`
 }
 
+type CodeStreamReq struct {
+	Space     string `json:"space" binding:"required"`
+	SessionID string `json:"session_id"` // 可选，空则新建会话
+	Question  string `json:"question" binding:"required"`
+	Lang      string `json:"lang"` // zh-CN | en，决定 follow-ups 语言
+}
+
 type CodeSyncReq struct {
 	Space string `json:"space" binding:"required"`
 }

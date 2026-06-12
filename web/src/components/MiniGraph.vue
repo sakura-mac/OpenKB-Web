@@ -122,6 +122,9 @@ const PALETTE: Record<string, string[]> = {
   summaries:    ['#5b6f3f', '#7a8a4a', '#a3a85a', '#5a8c7d'],
   // explorations: agent 写的对比/专题笔记。用紫粉家族区分于上面三类知识源。
   explorations: ['#7a4a8c', '#9c5fa8', '#b378b5', '#a890c4'],
+  // 代码问答：symbol（函数/类/方法）用靛蓝，file（源文件）用苔绿
+  symbol:       ['#3a4a7a', '#5566a0', '#7d8cc4', '#9b7fb0'],
+  file:         ['#5b6f3f', '#7a8a4a', '#a3a85a', '#5a8c7d'],
   default:      ['#4a4a4a', '#6a6a6a', '#8a8a8a', '#5a5a6a'],
 }
 function hashCode(s: string): number {
@@ -159,6 +162,8 @@ function shortCat(c: string): string {
   if (c === 'entities') return t('wiki.entities')
   if (c === 'summaries') return t('wiki.summaries')
   if (c === 'explorations') return t('wiki.explorations')
+  if (c === 'symbol') return t('code.catSymbol')
+  if (c === 'file') return t('code.catFile')
   return c
 }
 </script>

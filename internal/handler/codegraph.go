@@ -173,6 +173,112 @@ func DeleteCodeSpace(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
+func CodeStream(c *gin.Context) {
+	var req model.CodeStreamReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "缺少 space"})
+		return
+	}
+	cs, err := readCodeSpace(req.Space)
+	if err != nil {
+		c.JSON(404, gin.H{"error": "代码空间不存在"})
+		return
+	}
+
+	c.Header("Content-Type", "text/event-stream; charset=utf-8")
+	c.Header("Cache-Control", "no-cache, no-transform")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+
+	flusher, _ := c.Writer.(http.Flusher)
+	writeEvent := func(data string) {
+		c.Writer.Write([]byte("data: "))
+		c.Writer.Write([]byte(data))
+		c.Writer.Write([]byte("\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	writeObj := func(v any) {
+		b, _ := json.Marshal(v)
+		writeEvent(string(b))
+	}
+
+	cfg := config.Snapshot()
+	apiKey := cfg.LLMApiKey
+	baseURL := cfg.LLMBaseURL
+	llmModel := cfg.LLMModel
+	if apiKey == "" {
+		writeObj(map[string]any{"event": "error", "error": "未配置 LLM API Key，请先在设置页填入"})
+		return
+	}
+	if baseURL == "" {
+		baseURL = "https://api.deepseek.com"
+	}
+	if llmModel == "" {
+		llmModel = "deepseek/deepseek-chat"
+	}
+
+	// 组装多轮对话：system + 已存会话历史 + 当前 user。
+	messages := []map[string]any{
+		{"role": "system", "content": codeAgentSystemPrompt},
+	}
+	if req.SessionID != "" {
+		if s, err := loadCodeSession(req.Space, req.SessionID); err == nil {
+			for _, m := range s.Messages {
+				if m.Role == "user" || m.Role == "assistant" {
+					messages = append(messages, map[string]any{"role": m.Role, "content": m.Content})
+				}
+			}
+		}
+	}
+	messages = append(messages, map[string]any{"role": "user", "content": req.Question})
+
+	writeObj(map[string]any{"event": "start", "session_id": req.SessionID})
+
+	answer, tools, graph, err := runCodeAgent(c.Request.Context(), llmModel, baseURL, apiKey, cs.Path, messages, writeEvent)
+	if err != nil {
+		select {
+		case <-c.Request.Context().Done():
+			return
+		default:
+			writeObj(map[string]any{"event": "error", "error": err.Error()})
+			return
+		}
+	}
+
+	// 保存会话（追加这一轮，含图谱节点）→ 拿到 session_id / title
+	sid, title := appendCodeTurn(req.Space, req.SessionID, req.Question, answer, tools, graph)
+
+	writeObj(map[string]any{
+		"event":      "done",
+		"answer":     answer,
+		"session_id": sid,
+		"title":      title,
+		"graph":      graph,
+	})
+
+	// 客户端没断连 + 答案够长 → 异步生成 follow-ups
+	select {
+	case <-c.Request.Context().Done():
+		return
+	default:
+	}
+	if len([]rune(answer)) >= 20 {
+		lang := req.Lang
+		if lang != "en" {
+			lang = "zh-CN"
+		}
+		fctx, fcancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
+		defer fcancel()
+		fups := generateCodeFollowUps(fctx, llmModel, baseURL, apiKey, req.Question, answer, lang)
+		if len(fups) > 0 {
+			updateCodeTurnFollowUps(req.Space, sid, fups) // 回填持久化
+			writeObj(map[string]any{"event": "follow_ups", "follow_ups": fups})
+		}
+	}
+}
+
 func CodeQuery(c *gin.Context) {
 	var req model.CodeQueryReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -186,7 +292,7 @@ func CodeQuery(c *gin.Context) {
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 90*time.Second)
 	defer cancel()
-	success, stdout, stderr := codegraph.Run(ctx, cs.Path, "explore", req.Question)
+	success, stdout, stderr := codegraph.Run(ctx, cs.Path, "query", req.Question)
 	if success {
 		c.JSON(http.StatusOK, gin.H{"success": true, "answer": stdout})
 		return

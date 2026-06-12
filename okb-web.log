@@ -1,0 +1,53 @@
+2026/06/12 17:20:48 🏠 OKB home:    /data/home/khalilfchen/.config/OKB
+2026/06/12 17:20:48 📁 spaces:      okb-spaces
+2026/06/12 17:20:48 🗂️  cache:       /data/home/khalilfchen/.config/OKB/cache
+2026/06/12 17:20:48 📦 OpenKB spec: git+https://github.com/VectifyAI/OpenKB
+2026/06/12 17:20:48 📦 OKB Web 版本: dev
+2026/06/12 17:20:48 👁  watch raw/: /data/home/khalilfchen/public_html/okb-web/okb-spaces/cdp/raw
+2026/06/12 17:20:48 👁  watch raw/: /data/home/khalilfchen/public_html/okb-web/okb-spaces/db/raw
+2026/06/12 17:20:48 👁  watch raw/: /data/home/khalilfchen/public_html/okb-web/okb-spaces/linkage/raw
+2026/06/12 17:20:48 👁  watch raw/: /data/home/khalilfchen/public_html/okb-web/okb-spaces/linkage2/raw
+2026/06/12 17:20:48 👁  watch raw/: /data/home/khalilfchen/public_html/okb-web/okb-spaces/new-star/raw
+2026/06/12 17:20:48 🔄 reconcile /data/home/khalilfchen/public_html/okb-web/okb-spaces/cdp/raw: 触发 5 个文件的去重 add
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/cdp/raw/workflow.md: 
+2026/06/12 17:20:48 👁  watch raw/: /data/home/khalilfchen/public_html/okb-web/okb-spaces/workflow/raw
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/cdp/raw/SKILL.md: 
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/cdp/raw/commands.md: 
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/db/raw/01-architecture.md: 
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/cdp/raw/troubleshooting.md: 
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/cdp/raw/eval_snippets.md: 
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/db/raw/03-central-tables.md: 
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/db/raw/08-sql-cookbook.md: 
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/db/raw/07-snapshot-example.md: 
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/db/raw/04-shard-tables.md: 
+2026/06/12 17:20:48 🚀 OKB Web 启动: http://localhost:8901
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/db/raw/02-shard-routing.md: 
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/db/raw/06-pitfalls.md: 
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/linkage/raw/03-业务层-StepCompletionLinkageService.md: 
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/linkage/raw/02-配置层-StepLinkageConfigService.md: 
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/linkage/raw/README.md: 
+2026/06/12 17:20:48 📁 空间目录: okb-spaces
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/new-star/raw/document.md: 
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/db/raw/SKILL.md: 
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/linkage/raw/04-Controller-API.md: 
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/new-star/raw/document_2.md: 
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/linkage/raw/01-需求与数据模型.md: 
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/linkage/raw/07-前端-vue组件.md: 
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/linkage2/raw/01-需求与数据模型.md: 
+2026/06/12 17:20:48 🔄 reconcile /data/home/khalilfchen/public_html/okb-web/okb-spaces/new-star/raw: 触发 2 个文件的去重 add
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/db/raw/05-workflow-status.md: 
+2026/06/12 17:20:48 🔄 reconcile /data/home/khalilfchen/public_html/okb-web/okb-spaces/linkage/raw: 触发 8 个文件的去重 add
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/linkage/raw/06-工作流复制集成.md: 
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/linkage2/raw/02-配置层-StepLinkageConfigService.md: 
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/linkage/raw/05-钩子点-Story与WorkitemStepInfo.md: 
+2026/06/12 17:20:48 🔄 reconcile /data/home/khalilfchen/public_html/okb-web/okb-spaces/db/raw: 触发 9 个文件的去重 add
+2026/06/12 17:20:48 🔄 reconcile /data/home/khalilfchen/public_html/okb-web/okb-spaces/workflow/raw: 触发 1 个文件的去重 add
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/workflow/raw/并行工作流节点联动.md: 
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/linkage2/raw/03-业务层-StepCompletionLinkageService.md: 
+2026/06/12 17:20:48 🔄 reconcile /data/home/khalilfchen/public_html/okb-web/okb-spaces/linkage2/raw: 触发 9 个文件的去重 add
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/linkage2/raw/04-Controller-API.md: 
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/linkage2/raw/05-钩子点-Story与WorkitemStepInfo.md: 
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/linkage2/raw/06-工作流复制集成.md: 
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/linkage2/raw/07-前端-vue组件.md: 
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/linkage2/raw/README.md: 
+2026/06/12 17:20:48 ✗ auto-add /data/home/khalilfchen/public_html/okb-web/okb-spaces/linkage2/raw/08-MR-review-应答.md: 

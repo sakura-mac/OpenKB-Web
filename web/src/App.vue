@@ -16,7 +16,6 @@
           <li
             v-for="(s, i) in allSpaces" :key="s.kind + ':' + s.name"
             :class="['space-item', {
-              code: s.kind === 'code',
               active: !manageMode && currentSpaceName === s.name && currentKind === s.kind,
               selected: manageMode && selectedSpaces.has(s.name),
               manage: manageMode,
@@ -29,7 +28,6 @@
               :checked="selectedSpaces.has(s.name)"
               class="space-checkbox" @click.stop="toggleSelect(s.name)"
             />
-            <span class="space-kind">{{ s.kind === 'code' ? '⌘' : '¶' }}</span>
             <span class="space-name">{{ s.name }}</span>
             <!--
               空间统计数字：仅 hover 浮现「文档/产物面板」，不可点击。

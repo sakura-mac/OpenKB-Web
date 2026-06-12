@@ -31,6 +31,31 @@ export const api = {
     request<{ success: boolean; answer?: string; error?: string }>('/api/code/query', 'POST', { space, question }),
   codeSync: (space: string) =>
     request<{ success: boolean; task_id?: string; error?: string }>('/api/code/sync', 'POST', { space }),
+  // Code 多轮会话（持久化在 <OKB_HOME>/code-chats/<space>/<id>.json）
+  codeSessions: (space: string) =>
+    request<{ ok: boolean; sessions?: Array<{ id: string; title: string; turn_count: number; updated_at: string }>; error?: string }>(
+      `/api/code/sessions/${encodeURIComponent(space)}`,
+    ),
+  codeLoadSession: (space: string, sid: string) =>
+    request<{ ok: boolean; session_id?: string; title?: string; messages?: Array<{ role: string; content: string; tools?: string[]; graph?: Array<{ category: string; name: string }>; follow_ups?: string[] }>; error?: string }>(
+      `/api/code/session/${encodeURIComponent(space)}/${encodeURIComponent(sid)}`,
+    ),
+  codeDeleteSession: (space: string, sid: string) =>
+    fetch(`/api/code/session/${encodeURIComponent(space)}/${encodeURIComponent(sid)}`, { method: 'DELETE' }).then(r => r.json()),
+  codeSuggestions: (space: string, lang: string) =>
+    request<{ suggestions: string[] }>(
+      `/api/code/suggestions/${encodeURIComponent(space)}?lang=${encodeURIComponent(lang)}`,
+    ),
+  // 代码图谱：按需取某符号的 1 跳邻居（callers/callees）
+  codeGraphNeighbors: (space: string, symbol: string) =>
+    request<{ nodes: Array<{ id: string; label: string; kind: string; file?: string; line?: number; is_center?: boolean }>; edges: Array<{ source: string; target: string; type: string }> }>(
+      `/api/code/graph/${encodeURIComponent(space)}?symbol=${encodeURIComponent(symbol)}`,
+    ),
+  // 点击图谱节点：取该符号的源码片段
+  codeSymbolSource: (space: string, name: string) =>
+    request<{ found: boolean; name?: string; kind?: string; qualified?: string; file?: string; start_line?: number; end_line?: number; docstring?: string; code?: string }>(
+      `/api/code/symbol/${encodeURIComponent(space)}?name=${encodeURIComponent(name)}`,
+    ),
   wikiPage: (space: string, category: string, page: string) =>
     request<{ content?: string; error?: string }>(
       `/api/wiki/${encodeURIComponent(space)}/${encodeURIComponent(category)}/${encodeURIComponent(page)}`,
