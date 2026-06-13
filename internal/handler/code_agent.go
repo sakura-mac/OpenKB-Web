@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -34,6 +35,132 @@ const (
 	maxSourceLines = 260   // read_source 单次最多返回行数，防上下文爆炸
 	maxToolOutput  = 12000 // 单个工具输出最大字符数
 )
+
+// sampleBestOfN 并行 N 次 LLM 调用，fact-check 所有文本答案后选 issues 最少的。
+// 全是 tool_calls → 取第一条。其余流程（pass/fail/retry）归 agent loop 不变。
+func sampleBestOfN(ctx context.Context, chatURL, baseURL, apiKey, model, workDir string,
+	messages []map[string]any, tools []map[string]any, n int,
+	emit func(v any)) (string, []agentToolCall, error) {
+
+	temps := []float64{0.3, 0.7, 1.0}
+
+	type callResult struct {
+		content   string
+		toolCalls []agentToolCall
+		issues    []string
+		err       error
+	}
+	ch := make(chan callResult, n)
+
+	for i := 0; i < n; i++ {
+		go func(temp float64) {
+			c, tcs, err := llmCallNonStream(ctx, chatURL, apiKey, model, messages, tools, temp)
+			ch <- callResult{c, tcs, nil, err}
+		}(temps[i%len(temps)])
+	}
+
+	var results []callResult
+	for i := 0; i < n; i++ {
+		results = append(results, <-ch)
+	}
+
+	// fact-check 所有文本答案
+	for i := range results {
+		if results[i].err == nil && len(results[i].toolCalls) == 0 && results[i].content != "" {
+			results[i].issues = factCheckCodeAnswer(ctx, model, baseURL, apiKey, workDir, results[i].content)
+		}
+	}
+
+	// 选最优：issues 少优先 → 同 issues 答案更长优先 → 靠前 index
+	var best callResult
+	bestI := -1
+	for i, r := range results {
+		if r.err != nil {
+			continue
+		}
+		if len(r.toolCalls) > 0 {
+			if bestI < 0 {
+				best, bestI = r, i
+			}
+			continue
+		}
+		if bestI < 0 || len(best.toolCalls) > 0 || len(r.issues) < len(best.issues) ||
+			(len(r.issues) == len(best.issues) && len(r.content) > len(best.content)) {
+			best, bestI = r, i
+		}
+	}
+	if bestI < 0 {
+		return "", nil, fmt.Errorf("best-of-n: 所有采样均失败")
+	}
+
+	if best.content != "" {
+		emit(map[string]any{"event": "delta", "text": best.content})
+	}
+	return best.content, best.toolCalls, nil
+}
+
+// llmCallNonStream 非流式调一次 chat/completions，解析 message.content + tool_calls。
+func llmCallNonStream(ctx context.Context, url, apiKey, model string,
+	messages []map[string]any, tools []map[string]any, temperature float64) (string, []agentToolCall, error) {
+
+	reqBody := map[string]any{
+		"model":       model,
+		"stream":      false,
+		"messages":    messages,
+		"tools":       tools,
+		"temperature": temperature,
+	}
+	payload, _ := json.Marshal(reqBody)
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(string(payload)))
+	if err != nil {
+		return "", nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return "", nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", nil, err
+	}
+
+	var cr struct {
+		Choices []struct {
+			Message struct {
+				Content   string `json:"content"`
+				ToolCalls []struct {
+					ID       string `json:"id"`
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &cr); err != nil || len(cr.Choices) == 0 {
+		if err != nil {
+			return "", nil, fmt.Errorf("解析 LLM 响应失败: %w", err)
+		}
+		return "", nil, fmt.Errorf("LLM 返回空 choices")
+	}
+
+	content := cr.Choices[0].Message.Content
+	var tcs []agentToolCall
+	for _, tc := range cr.Choices[0].Message.ToolCalls {
+		tcs = append(tcs, agentToolCall{
+			ID:   tc.ID,
+			Name: tc.Function.Name,
+			Args: tc.Function.Arguments,
+		})
+	}
+	return content, tcs, nil
+}
 
 // codeAgentTools 返回 OpenAI function-calling 工具定义。
 func codeAgentTools() []map[string]any {
@@ -110,7 +237,10 @@ const codeAgentSystemPrompt = `你是资深代码分析助手，可以调用工�
 //
 // messages: 已包含 system + 历史对话 + 当前 user 的完整消息列表。
 // 返回：(最终答案, 工具时间轴, 图谱节点, error)
-func runCodeAgent(ctx context.Context, model, baseURL, apiKey, workDir string, messages []map[string]any, writeEvent func(string)) (string, []string, []map[string]string, error) {
+func runCodeAgent(ctx context.Context, model, baseURL, apiKey, workDir string, messages []map[string]any, writeEvent func(string), temperature float64, bestOfN int) (string, []string, []map[string]string, error) {
+	if bestOfN < 1 {
+		bestOfN = 1
+	}
 	emit := func(v any) {
 		b, _ := json.Marshal(v)
 		writeEvent(string(b))
@@ -172,11 +302,13 @@ func runCodeAgent(ctx context.Context, model, baseURL, apiKey, workDir string, m
 				toolTrace = append(toolTrace, fmt.Sprintf("context_compressed(→%d msgs)", len(messages)))
 			}
 		}
+		// 工具探索阶段不做 best-of-n，保持原流式单次调用
 		reqBody := map[string]any{
-			"model":    actualModel,
-			"stream":   true,
-			"messages": messages,
-			"tools":    tools,
+			"model":       actualModel,
+			"stream":      true,
+			"messages":    messages,
+			"tools":       tools,
+			"temperature": temperature,
 		}
 		payload, _ := json.Marshal(reqBody)
 
@@ -207,6 +339,12 @@ func runCodeAgent(ctx context.Context, model, baseURL, apiKey, workDir string, m
 		// 若有不实声明，把要点塞回对话让 agent 继续修订；通过才返回。
 		// 不约束次数——校验一直跑到通过为止，靠请求 ctx 兜底（断连/超时退出）。
 		if len(toolCalls) == 0 {
+			// Best-of-N：从当前 messages 状态出发，并行采 N 条最终答案，fact-check 取 issues 最少的。
+			if bestOfN > 1 {
+				emit(map[string]any{"event": "tool", "name": "best_of_n", "args": fmt.Sprintf("从 %d 条采样中取最优", bestOfN)})
+				toolTrace = append(toolTrace, fmt.Sprintf("best_of_n(%d)", bestOfN))
+				content, _, _ = sampleBestOfN(ctx, chatURL, baseURL, apiKey, actualModel, workDir, messages, tools, bestOfN, emit)
+			}
 			emit(map[string]any{"event": "tool", "name": "fact_check", "args": ""})
 			toolTrace = append(toolTrace, "fact_check")
 			issues := factCheckCodeAnswer(ctx, model, baseURL, apiKey, workDir, content)

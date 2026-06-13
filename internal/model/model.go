@@ -72,6 +72,7 @@ type CodeStreamReq struct {
 	SessionID string `json:"session_id"` // 可选，空则新建会话
 	Question  string `json:"question" binding:"required"`
 	Lang      string `json:"lang"` // zh-CN | en，决定 follow-ups 语言
+	BestOf    int    `json:"best_of"` // 1=单次（默认），>1 并行 N 条取最优
 }
 
 type CodeSyncReq struct {

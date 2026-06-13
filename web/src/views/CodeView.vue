@@ -441,6 +441,7 @@ async function doSend() {
         session_id: currentSid.value || '',
         question: q,
         lang: locale.value,
+        best_of: 3,
       }),
     })
     if (!resp.ok || !resp.body) throw new Error(`HTTP ${resp.status}`)
