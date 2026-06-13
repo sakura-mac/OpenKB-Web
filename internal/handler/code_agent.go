@@ -122,12 +122,7 @@ func runCodeAgent(ctx context.Context, model, baseURL, apiKey, workDir string, m
 	}
 	chatURL := base + "/chat/completions"
 
-	// DeepSeek 直连不认 litellm 的 provider/ 前缀
 	actualModel := model
-	if strings.Contains(baseURL, "deepseek.com") && strings.Contains(model, "/") {
-		actualModel = strings.SplitN(model, "/", 2)[1]
-	}
-
 	tools := codeAgentTools()
 
 	// 收集 agent 探索过的图谱节点（含 kind），done 时给前端画 chip。
@@ -603,9 +598,6 @@ func llmComplete(ctx context.Context, model, baseURL, apiKey string, messages []
 		base += "/v1"
 	}
 	actualModel := model
-	if strings.Contains(baseURL, "deepseek.com") && strings.Contains(model, "/") {
-		actualModel = strings.SplitN(model, "/", 2)[1]
-	}
 	reqBody := map[string]any{
 		"model":       actualModel,
 		"messages":    messages,

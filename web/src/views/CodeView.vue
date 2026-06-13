@@ -197,6 +197,7 @@ import { api } from '../api'
 import { renderMarkdownWithWikilinks, handleCodeCopyClick } from '../markdown'
 import type { CodeSpaceInfo } from '../types'
 import { useChatState } from '../composables/useChatState'
+import { useUpload } from '../composables/useUpload'
 import CodeGraphPanel from '../components/CodeGraphPanel.vue'
 
 const { t, locale } = useI18n()
@@ -216,6 +217,7 @@ const question = ref('')
 const msgContainer = ref<HTMLElement>()
 const copiedIdx = ref<number>(-1)
 const syncing = ref(false)
+const { startUpload, pollTask } = useUpload()
 const graphSeed = ref('') // 打开代码图谱浮层的种子符号
 
 function openGraph(symbol: string) {
@@ -584,9 +586,19 @@ async function sync() {
   syncing.value = true
   try {
     const res = await api.codeSync(props.space.name)
-    if (!res.success) console.error('sync failed:', res.error)
-  } catch (e: any) { console.error('sync error:', e?.message || e) }
-  finally { setTimeout(() => { syncing.value = false; emit('refresh') }, 1400) }
+    if (!res.success || !res.task_id) {
+      syncing.value = false
+      return
+    }
+    const uiId = startUpload(1, '正在同步 CodeGraph 索引…')
+    pollTask(uiId, res.task_id, () => {
+      syncing.value = false
+      emit('refresh')
+    })
+  } catch (e: any) {
+    syncing.value = false
+    console.error('sync error:', e?.message || e)
+  }
 }
 
 watch(isEmpty, (empty) => {

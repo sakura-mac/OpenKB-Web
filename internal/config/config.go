@@ -96,7 +96,8 @@ func Init() {
 		_ = json.Unmarshal(data, &cfg) // 失败时保留默认值，不致命
 	}
 
-	// 2) env 覆盖（最高优先级）
+	// 2) env 兜底：LLM 相关字段 Web 设置页保存过的优先（config.json > env > 默认）
+	// PORT / SPACES_ROOT / OKB_SPEC 保持 env 最高优先级（基础设施）
 	if v := os.Getenv("PORT"); v != "" {
 		cfg.Port = v
 	} else if cfg.Port == "" {
@@ -114,17 +115,21 @@ func Init() {
 	} else if cfg.OKBSpec == "" {
 		cfg.OKBSpec = defaultOKBSpec
 	}
-	if v := os.Getenv("LLM_API_KEY"); v != "" {
-		cfg.LLMApiKey = v
+	if cfg.LLMApiKey == "" && os.Getenv("LLM_API_KEY") != "" {
+		cfg.LLMApiKey = os.Getenv("LLM_API_KEY")
 	}
-	if v := os.Getenv("LLM_BASE_URL"); v != "" {
-		cfg.LLMBaseURL = v
+	if cfg.LLMBaseURL == "" || cfg.LLMBaseURL == "https://api.deepseek.com" {
+		if v := os.Getenv("LLM_BASE_URL"); v != "" {
+			cfg.LLMBaseURL = v
+		}
 	}
-	if v := os.Getenv("LLM_MODEL"); v != "" {
-		cfg.LLMModel = v
+	if cfg.LLMModel == "" || cfg.LLMModel == "deepseek/deepseek-chat" {
+		if v := os.Getenv("LLM_MODEL"); v != "" {
+			cfg.LLMModel = v
+		}
 	}
-	if v := os.Getenv("LLM_LANGUAGE"); v != "" {
-		cfg.LLMLanguage = v
+	if cfg.LLMLanguage == "" && os.Getenv("LLM_LANGUAGE") != "" {
+		cfg.LLMLanguage = os.Getenv("LLM_LANGUAGE")
 	}
 
 	// 3) 旧版兼容：cwd 下有 okb-spaces 且 SpacesRoot 落在默认位置时，优先用 cwd 那个
