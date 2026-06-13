@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -24,6 +25,17 @@ var version = "dev"
 
 func main() {
 	config.Init()
+
+	// 日志双写：终端 stderr + 文件 <OKB_HOME>/okb-web.log
+	home := config.C.OKBHome
+	os.MkdirAll(home, 0755)
+	logPath := filepath.Join(home, "okb-web.log")
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND|os.O_SYNC, 0644)
+	if err != nil {
+		log.Printf("⚠️ 无法打开日志文件 %s: %v（仅输出到终端）", logPath, err)
+	} else {
+		log.SetOutput(io.MultiWriter(os.Stderr, f))
+	}
 	log.Printf("📦 OKB Web 版本: %s", version)
 
 	// 首次启动：异步装 OpenKB（拉 uv standalone + uv tool install）。

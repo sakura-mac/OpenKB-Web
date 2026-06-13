@@ -689,15 +689,29 @@ func factCheckCodeAnswerBySource(ctx context.Context, model, baseURL, apiKey, wo
 	if strings.TrimSpace(answer) == "" {
 		return nil
 	}
-	sys := `你是源码细节抽取器。从给定的代码分析回答里抽出"可以通过读源码精确验证的细节声明"。
-严格输出一个 JSON 数组，每项形如：
-{"file":"<相对路径>","line":<行号>,"snippet":"<期望该位置存在的代码片段，单行特征文本，10-80 字符>"}
-只抽答案明确陈述「在 X 文件第 N 行有 Y」这种声明，不抽笼统描述。穷尽所有此类声明，不要遗漏。
-snippet 必须是答案中明确描述的代码特征（函数签名 / 关键 if 条件 / 调用语句等），不要编造。
-不要 markdown，不要解释，直接 JSON 数组。回答里没此类声明则输出 []。`
+
+	// ---- Phase 1：抽取两类可验证声明 ----
+	//
+	// Type A（代码位置声明）：{file, line, snippet} — "X 文件第 N 行有 Y 代码"
+	//   → 用 substring 匹配源码，抓"抄错行号/编造片段"
+	//
+	// Type B（语义结论声明）：{conclusion, file, lines} — "这段代码有 bug / 这个逻辑会导致 X"
+	//   → 读源码后喂给判定 LLM，抓"结论不成立"的假阳性（如 Bug1 那种 key 类型问题）
+	//
+	extractSys := `你是代码分析结论抽取器。从给定的代码分析回答里抽出两类"可以通过读源码验证"的声明。
+
+严格输出 JSON 数组，每项形如：
+{"type":"loc","file":"<相对路径>","line":<行号>,"snippet":"<期望该位置的代码特征文本，10-80字符>"}
+或
+{"type":"sem","conclusion":"<AI 的分析结论/判断，一句话>","file":"<涉及文件相对路径>","lines":"<相关行范围，如 40-58 或 42-44>"}
+
+type=loc：只抽明确陈述「在 X 文件第 N 行有 Y 代码」的位置性声明。
+type=sem：只抽 AI 给出的**判断性结论**（bug、风险、设计缺陷、行为预测等），不要抽事实描述。
+
+穷尽抽取，不要遗漏。不要 markdown 不要解释。无此类声明则输出 []。`
 
 	raw, err := llmComplete(ctx, model, baseURL, apiKey, []map[string]string{
-		{"role": "system", "content": sys},
+		{"role": "system", "content": extractSys},
 		{"role": "user", "content": answer},
 	}, 2048)
 	if err != nil {
@@ -709,12 +723,16 @@ snippet 必须是答案中明确描述的代码特征（函数签名 / 关键 if
 			raw = raw[i : j+1]
 		}
 	}
-	var claims []struct {
-		File    string `json:"file"`
-		Line    int    `json:"line"`
-		Snippet string `json:"snippet"`
+
+	var rawClaims []struct {
+		Type       string `json:"type"`       // "loc" | "sem"
+		File       string `json:"file"`
+		Line       int    `json:"line"`
+		Snippet    string `json:"snippet"`
+		Conclusion string `json:"conclusion"`
+		Lines      string `json:"lines"`
 	}
-	if json.Unmarshal([]byte(raw), &claims) != nil || len(claims) == 0 {
+	if json.Unmarshal([]byte(raw), &rawClaims) != nil || len(rawClaims) == 0 {
 		return nil
 	}
 
@@ -728,34 +746,111 @@ snippet 必须是答案中明确描述的代码特征（函数签名 / 关键 if
 		issues = append(issues, "- "+s)
 	}
 
-	for _, cl := range claims {
+	// ---- Phase 2：两类核查并行执行 ----
+	//
+	// loc 声明 → substring 匹配（快速，本地）
+	// sem 声明 → LLM 判定结论是否成立（慢，需 API 调用，并行加速）
+	//
+	judgeSys := `你是代码分析结论核查员。给定一段 AI 对某源码的分析结论 + 该源码的真实内容，
+判断该结论是否成立。只考虑源码本身和语言运行时行为，不考虑外部依赖。
+
+输出格式（JSON）：
+{"verdict":"pass|fail","reason":"一句话原因"}
+
+规则：
+- pass：结论确实被源码支持（或至少合理）
+- fail：结论与源码矛盾、或忽略了运行时行为导致误判（如 PHP 类型转换自动完成 key 匹配）
+- 不确定时倾向 pass（宁可漏报也不要误杀）`
+
+	var mu sync.Mutex
+	var semIssues []string
+
+	var wg sync.WaitGroup
+	for _, cl := range rawClaims {
 		select {
 		case <-ctx.Done():
 			return issues
 		default:
 		}
-		if cl.File == "" || cl.Line <= 0 || strings.TrimSpace(cl.Snippet) == "" {
-			continue
-		}
-		// 读 line ± 5 行
-		start, end := cl.Line-5, cl.Line+5
-		if start < 1 {
-			start = 1
-		}
-		src := readSource(workDir, cl.File, start, end)
-		// 错误（路径不存在/越界等）→ 文件路径声明本身就有问题
-		if strings.HasPrefix(src, "错误：") {
-			push(fmt.Sprintf("声称的文件 `%s` 无法读取（%s）", cl.File, strings.TrimPrefix(src, "错误：")))
-			continue
-		}
-		// 简单匹配：snippet 关键 token 是否出现在源码段内（不区分空白）
-		needle := normalizeForMatch(cl.Snippet)
-		hay := normalizeForMatch(src)
-		if !strings.Contains(hay, needle) {
-			push(fmt.Sprintf("声称 `%s:%d` 处有 `%s`，源码该段未匹配到", cl.File, cl.Line, truncateText(cl.Snippet, 60)))
+		if cl.Type == "loc" && cl.File != "" && cl.Line > 0 && strings.TrimSpace(cl.Snippet) != "" {
+			// Phase 2a：loc — 直接 substring 匹配
+			start, end := cl.Line-5, cl.Line+5
+			if start < 1 {
+				start = 1
+			}
+			src := readSource(workDir, cl.File, start, end)
+			if strings.HasPrefix(src, "错误：") {
+				mu.Lock()
+				push(fmt.Sprintf("声称的文件 `%s` 无法读取（%s）", cl.File, strings.TrimPrefix(src, "错误：")))
+				mu.Unlock()
+				continue
+			}
+			needle := normalizeForMatch(cl.Snippet)
+			hay := normalizeForMatch(src)
+			if !strings.Contains(hay, needle) {
+				mu.Lock()
+				push(fmt.Sprintf("声称 `%s:%d` 处有 `%s`，源码该段未匹配到", cl.File, cl.Line, truncateText(cl.Snippet, 60)))
+				mu.Unlock()
+			}
+		} else if cl.Type == "sem" && cl.Conclusion != "" && cl.File != "" {
+			// Phase 2b：sem — 异步 LLM 判定
+			conc, fpath, lns := cl.Conclusion, cl.File, cl.Lines
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				s, e := parseLineRange(lns)
+				if s < 1 { s = 1 }
+				if e < s { e = s + 15 }
+				src := readSource(workDir, fpath, s, e)
+				if strings.HasPrefix(src, "错误：") { return }
+
+				prompt := fmt.Sprintf(`结论：%s
+
+涉及的源码（%s 第 %s 行）：
+%s`, conc, fpath, lns, src)
+				raw, err := llmComplete(ctx, model, baseURL, apiKey, []map[string]string{
+					{"role": "system", "content": judgeSys},
+					{"role": "user", "content": prompt},
+				}, 512)
+				if err != nil { return }
+				var v struct { Verdict string `json:"verdict"`; Reason string `json:"reason"` }
+				if json.Unmarshal([]byte(raw), &v) != nil || v.Verdict != "fail" || v.Reason == "" { return }
+				mu.Lock()
+				semIssues = append(semIssues,
+					fmt.Sprintf("结论「%s」经源码核查不成立：%s", truncateText(conc, 60), truncateText(v.Reason, 100)))
+				mu.Unlock()
+			}()
 		}
 	}
+	wg.Wait()
+
+	for _, s := range semIssues {
+		push(s)
+	}
 	return issues
+}
+
+// parseLineRange 解析行范围字符串 "40-58" 或 "42"，返回 (start, end)。
+func parseLineRange(s string) (int, int) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, 0
+	}
+	parts := strings.SplitN(s, "-", 2)
+	a, _ := strconv.Atoi(strings.TrimSpace(parts[0]))
+	if len(parts) == 1 {
+		b := a - 5
+		c := a + 5
+		if b < 1 {
+			b = 1
+		}
+		return b, c
+	}
+	b, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if b < a {
+		b = a + 10
+	}
+	return a, b
 }
 
 // normalizeForMatch 折叠空白用于片段匹配（snippet 与源码空格/换行可能不同）
@@ -776,6 +871,7 @@ func normalizeForMatch(s string) string {
 	}
 	return b.String()
 }
+
 // 用于生成 follow-ups / suggestions 这类一次性轻量任务。
 func llmComplete(ctx context.Context, model, baseURL, apiKey string, messages []map[string]string, maxTokens int) (string, error) {
 	base := strings.TrimSuffix(baseURL, "/")

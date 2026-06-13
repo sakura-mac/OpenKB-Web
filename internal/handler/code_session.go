@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -309,9 +310,14 @@ func generateCodeFollowUps(ctx context.Context, model, baseURL, apiKey, userQ, a
 		{"role": "user", "content": "问题:\n" + userQ + "\n\n回答:\n" + answer},
 	}, 256)
 	if err != nil {
+		log.Printf("[follow_ups] LLM 调用失败: %v", err)
 		return nil
 	}
-	return parseJSONStringArray(content, 3)
+	fups := parseJSONStringArray(content, 3)
+	if len(fups) == 0 {
+		log.Printf("[follow_ups] JSON 解析失败或结果为空，LLM 返回: %s", truncateText(content, 200))
+	}
+	return fups
 }
 
 var jsonArrayRe = regexp.MustCompile(`\[\s*"[^"]*"(?:\s*,\s*"[^"]*")*\s*\]`)

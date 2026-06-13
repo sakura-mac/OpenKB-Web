@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -275,7 +276,11 @@ func CodeStream(c *gin.Context) {
 		if len(fups) > 0 {
 			updateCodeTurnFollowUps(req.Space, sid, fups) // 回填持久化
 			writeObj(map[string]any{"event": "follow_ups", "follow_ups": fups})
+		} else {
+			log.Printf("[follow_ups] 生成结果为空（LLM 失败或 JSON 解析失败），跳过")
 		}
+	} else {
+		log.Printf("[follow_ups] 答案太短 (%d 字符)，跳过生成", len([]rune(answer)))
 	}
 }
 
