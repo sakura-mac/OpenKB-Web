@@ -480,10 +480,14 @@ async function doSend() {
           thinkingMsg.value = t('code.factCheckPassed')
         } else if (ev.name === 'fact_check_failed') {
           thinkingMsg.value = t('code.factCheckRetry')
+        } else if (ev.name === 'fact_check_source') {
+          thinkingMsg.value = t('code.factCheckSource')
         } else if (ev.name === 'context_compress') {
           thinkingMsg.value = t('code.contextCompressing')
         } else if (ev.name === 'context_compressed') {
           thinkingMsg.value = t('code.contextCompressed')
+        } else if (ev.name === 'best_of_n') {
+          thinkingMsg.value = ev.args || t('code.bestOfNRunning')
         } else {
           thinkingMsg.value = t('query.toolRunning', { name: ev.name || '?' })
         }

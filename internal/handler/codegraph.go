@@ -236,7 +236,7 @@ func CodeStream(c *gin.Context) {
 
 	writeObj(map[string]any{"event": "start", "session_id": req.SessionID})
 
-	answer, tools, graph, err := runCodeAgent(c.Request.Context(), llmModel, baseURL, apiKey, cs.Path, messages, writeEvent, 0.7, req.BestOf)
+	answer, tools, graph, err := runBestOfNAgent(c.Request.Context(), llmModel, baseURL, apiKey, cs.Path, messages, writeEvent, 3)
 	if err != nil {
 		select {
 		case <-c.Request.Context().Done():

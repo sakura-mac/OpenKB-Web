@@ -5,12 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"okb-web/internal/codegraph"
 )
@@ -36,130 +36,17 @@ const (
 	maxToolOutput  = 12000 // 单个工具输出最大字符数
 )
 
-// sampleBestOfN 并行 N 次 LLM 调用，fact-check 所有文本答案后选 issues 最少的。
-// 全是 tool_calls → 取第一条。其余流程（pass/fail/retry）归 agent loop 不变。
-func sampleBestOfN(ctx context.Context, chatURL, baseURL, apiKey, model, workDir string,
-	messages []map[string]any, tools []map[string]any, n int,
-	emit func(v any)) (string, []agentToolCall, error) {
-
-	temps := []float64{0.3, 0.7, 1.0}
-
-	type callResult struct {
-		content   string
-		toolCalls []agentToolCall
-		issues    []string
-		err       error
-	}
-	ch := make(chan callResult, n)
-
-	for i := 0; i < n; i++ {
-		go func(temp float64) {
-			c, tcs, err := llmCallNonStream(ctx, chatURL, apiKey, model, messages, tools, temp)
-			ch <- callResult{c, tcs, nil, err}
-		}(temps[i%len(temps)])
-	}
-
-	var results []callResult
-	for i := 0; i < n; i++ {
-		results = append(results, <-ch)
-	}
-
-	// fact-check 所有文本答案
-	for i := range results {
-		if results[i].err == nil && len(results[i].toolCalls) == 0 && results[i].content != "" {
-			results[i].issues = factCheckCodeAnswer(ctx, model, baseURL, apiKey, workDir, results[i].content)
+// deepCopyMessages 深拷贝 messages，避免并行 goroutine 共享切片底层数组。
+func deepCopyMessages(src []map[string]any) []map[string]any {
+	dst := make([]map[string]any, len(src))
+	for i, m := range src {
+		nm := make(map[string]any, len(m))
+		for k, v := range m {
+			nm[k] = v
 		}
+		dst[i] = nm
 	}
-
-	// 选最优：issues 少优先 → 同 issues 答案更长优先 → 靠前 index
-	var best callResult
-	bestI := -1
-	for i, r := range results {
-		if r.err != nil {
-			continue
-		}
-		if len(r.toolCalls) > 0 {
-			if bestI < 0 {
-				best, bestI = r, i
-			}
-			continue
-		}
-		if bestI < 0 || len(best.toolCalls) > 0 || len(r.issues) < len(best.issues) ||
-			(len(r.issues) == len(best.issues) && len(r.content) > len(best.content)) {
-			best, bestI = r, i
-		}
-	}
-	if bestI < 0 {
-		return "", nil, fmt.Errorf("best-of-n: 所有采样均失败")
-	}
-
-	if best.content != "" {
-		emit(map[string]any{"event": "delta", "text": best.content})
-	}
-	return best.content, best.toolCalls, nil
-}
-
-// llmCallNonStream 非流式调一次 chat/completions，解析 message.content + tool_calls。
-func llmCallNonStream(ctx context.Context, url, apiKey, model string,
-	messages []map[string]any, tools []map[string]any, temperature float64) (string, []agentToolCall, error) {
-
-	reqBody := map[string]any{
-		"model":       model,
-		"stream":      false,
-		"messages":    messages,
-		"tools":       tools,
-		"temperature": temperature,
-	}
-	payload, _ := json.Marshal(reqBody)
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(string(payload)))
-	if err != nil {
-		return "", nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
-
-	resp, err := http.DefaultClient.Do(httpReq)
-	if err != nil {
-		return "", nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", nil, err
-	}
-
-	var cr struct {
-		Choices []struct {
-			Message struct {
-				Content   string `json:"content"`
-				ToolCalls []struct {
-					ID       string `json:"id"`
-					Function struct {
-						Name      string `json:"name"`
-						Arguments string `json:"arguments"`
-					} `json:"function"`
-				} `json:"tool_calls"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(body, &cr); err != nil || len(cr.Choices) == 0 {
-		if err != nil {
-			return "", nil, fmt.Errorf("解析 LLM 响应失败: %w", err)
-		}
-		return "", nil, fmt.Errorf("LLM 返回空 choices")
-	}
-
-	content := cr.Choices[0].Message.Content
-	var tcs []agentToolCall
-	for _, tc := range cr.Choices[0].Message.ToolCalls {
-		tcs = append(tcs, agentToolCall{
-			ID:   tc.ID,
-			Name: tc.Function.Name,
-			Args: tc.Function.Arguments,
-		})
-	}
-	return content, tcs, nil
+	return dst
 }
 
 // codeAgentTools 返回 OpenAI function-calling 工具定义。
@@ -229,18 +116,13 @@ const codeAgentSystemPrompt = `你是资深代码分析助手，可以调用工�
 - 如果搜不到符号，尝试换关键词或更宽泛的搜索
 - 最终回答用 Markdown，代码片段用代码块并标明语言`
 
-// runCodeAgent 执行 agentic loop：流式调 LLM，解析 tool_calls 并执行，
-// 直到模型给出最终文本答案。每个工具调用发 `tool` SSE 事件，过程文本发 `delta`。
+// runCodeAgentOnce 执行一次独立的 agent 探索：流式调 LLM、执行工具，
+// 直到模型给出最终文本答案（无 tool_calls）为止，然后对答案跑一次 codegraph fact-check。
+// 不重试、不做 source check、不做 best-of-n —— 这些由外层 runBestOfNAgent 负责。
 //
-// 不在内部发 done —— 返回最终 answer + 探索过的图谱节点（符号/文件），
-// 由调用方（CodeStream）统一发 done（携带 session_id / title / graph）。
-//
-// messages: 已包含 system + 历史对话 + 当前 user 的完整消息列表。
-// 返回：(最终答案, 工具时间轴, 图谱节点, error)
-func runCodeAgent(ctx context.Context, model, baseURL, apiKey, workDir string, messages []map[string]any, writeEvent func(string), temperature float64, bestOfN int) (string, []string, []map[string]string, error) {
-	if bestOfN < 1 {
-		bestOfN = 1
-	}
+// messages: 已包含 system + 历史对话 + 当前 user（或上一轮失败反馈）的完整消息列表。
+// 返回：(最终答案, codegraph fact-check issues, 工具时间轴, 图谱节点, error)
+func runCodeAgentOnce(ctx context.Context, model, baseURL, apiKey, workDir string, messages []map[string]any, writeEvent func(string), temperature float64) (string, []string, []string, []map[string]string, error) {
 	emit := func(v any) {
 		b, _ := json.Marshal(v)
 		writeEvent(string(b))
@@ -277,21 +159,12 @@ func runCodeAgent(ctx context.Context, model, baseURL, apiKey, workDir string, m
 
 	var toolTrace []string
 
-	// 进 loop 时 messages 形如 [system, ...历史 user/assistant（已确认成果）, 本轮 user]，
-	// 这一段是修订基线：fact-check 失败时把它原样保留，只丢本轮新增的 tool_calls / tool 回填。
-	// 注意切片必须在进 loop 前就拍快照——append 可能复用底层数组，等 messages 增长后再切就拿不到原段了。
-	baseLen := len(messages)
-	baseMessages := make([]map[string]any, baseLen)
-	copy(baseMessages, messages)
-
 	// 不约束轮数：让 agent 一直探索直到自己给出最终答案（不再调工具）为止。
-	// 安全兜底靠请求上下文 ctx —— 客户端断连 / 超时会让网络请求失败而退出。
 	for {
 		if err := ctx.Err(); err != nil {
-			return "", toolTrace, graph, err
+			return "", nil, toolTrace, graph, err
 		}
-		// 上下文体积管控：消息总 token 估算 > 模型容量 60% 就压缩历史，避免 LLM 拒绝请求。
-		// 压缩策略：保留 system + 最近 6 条对话，中间的工具回填合成 1 条精简摘要塞回去。
+		// 上下文体积管控
 		if estimateMessagesTokens(messages) > contextBudget(model)*60/100 {
 			emit(map[string]any{"event": "tool", "name": "context_compress", "args": fmt.Sprintf("%d msgs", len(messages))})
 			toolTrace = append(toolTrace, fmt.Sprintf("context_compress(%d msgs)", len(messages)))
@@ -302,7 +175,8 @@ func runCodeAgent(ctx context.Context, model, baseURL, apiKey, workDir string, m
 				toolTrace = append(toolTrace, fmt.Sprintf("context_compressed(→%d msgs)", len(messages)))
 			}
 		}
-		// 工具探索阶段不做 best-of-n，保持原流式单次调用
+
+		// 单次流式 LLM 调用
 		reqBody := map[string]any{
 			"model":       actualModel,
 			"stream":      true,
@@ -311,70 +185,28 @@ func runCodeAgent(ctx context.Context, model, baseURL, apiKey, workDir string, m
 			"temperature": temperature,
 		}
 		payload, _ := json.Marshal(reqBody)
-
 		httpReq, err := http.NewRequestWithContext(ctx, "POST", chatURL, strings.NewReader(string(payload)))
 		if err != nil {
-			return "", toolTrace, graph, fmt.Errorf("创建请求失败: %w", err)
+			return "", nil, toolTrace, graph, fmt.Errorf("创建请求失败: %w", err)
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
-
 		resp, err := http.DefaultClient.Do(httpReq)
 		if err != nil {
-			return "", toolTrace, graph, fmt.Errorf("调用 LLM 失败: %w", err)
+			return "", nil, toolTrace, graph, fmt.Errorf("调用 LLM 失败: %w", err)
 		}
-
 		content, toolCalls, _, err := parseAgentStream(resp, emit)
 		resp.Body.Close()
 		if err != nil {
-			return "", toolTrace, graph, err
+			return "", nil, toolTrace, graph, err
 		}
 
-		// 没有工具调用 → content 是最终答案。但先做事实校验：
-		// 让独立 LLM A1 从答案里抽出"声称的函数 / 调用关系"，逐条对照 codegraph 索引验证。
-		// 若有不实声明，把要点塞回对话让 agent 继续修订；通过才返回。
-		// factCheckedRounds 防止无限循环（最多重审 2 次）。
-		// 没有工具调用 → content 是最终答案。但先做事实校验：
-		// 让独立 LLM A1 从答案里抽出"声称的函数 / 调用关系"，逐条对照 codegraph 索引验证。
-		// 若有不实声明，把要点塞回对话让 agent 继续修订；通过才返回。
-		// 不约束次数——校验一直跑到通过为止，靠请求 ctx 兜底（断连/超时退出）。
+		// 出最终答案（无 tool_calls）→ 跑一次 codegraph fact-check，返回（不重试）
 		if len(toolCalls) == 0 {
-			// Best-of-N：从当前 messages 状态出发，并行采 N 条最终答案，fact-check 取 issues 最少的。
-			if bestOfN > 1 {
-				emit(map[string]any{"event": "tool", "name": "best_of_n", "args": fmt.Sprintf("从 %d 条采样中取最优", bestOfN)})
-				toolTrace = append(toolTrace, fmt.Sprintf("best_of_n(%d)", bestOfN))
-				content, _, _ = sampleBestOfN(ctx, chatURL, baseURL, apiKey, actualModel, workDir, messages, tools, bestOfN, emit)
-			}
 			emit(map[string]any{"event": "tool", "name": "fact_check", "args": ""})
 			toolTrace = append(toolTrace, "fact_check")
 			issues := factCheckCodeAnswer(ctx, model, baseURL, apiKey, workDir, content)
-			if len(issues) == 0 {
-				emit(map[string]any{"event": "tool", "name": "fact_check_passed", "args": ""})
-				toolTrace = append(toolTrace, "fact_check_passed")
-				return content, toolTrace, graph, nil
-			}
-			emit(map[string]any{"event": "tool", "name": "fact_check_failed", "args": fmt.Sprintf("%d issue(s)", len(issues))})
-			toolTrace = append(toolTrace, fmt.Sprintf("fact_check_failed(%d issues)", len(issues)))
-
-			// 重置上下文：fact-check 失败时只保留
-			//   1) baseMessages：[system, 历史 user/assistant（多轮会话已确认成果）, 本轮 user]
-			//   2) 当次的 [assistant(最新答案), user(最新 issues)]——滚动更新，不累积历史修订链
-			// 丢弃的是本轮 agent 的 tool_calls / tool 回填（占地方的源码 dump 等探索过程），
-			// 也丢更早的修订对（A1/issues_1 等）。每次失败 messages 长度恒定 baseLen+2，token 不增长。
-			// agent 重新跑会再调工具核实——丢的是工具回填体积，留的是当次答案 + 错点指引。
-			messages = make([]map[string]any, 0, baseLen+2)
-			messages = append(messages, baseMessages...)
-			messages = append(messages,
-				map[string]any{"role": "assistant", "content": content},
-				map[string]any{
-					"role": "user",
-					"content": "上一轮回答中以下事实点未通过 codegraph 校验（可能函数不存在、调用关系不存在、文件路径不对）：\n\n" +
-						strings.Join(issues, "\n") +
-						"\n\n请使用工具重新核实这些点（必要时调用 search_symbol / find_callers / find_callees / read_source），" +
-						"然后给出修订版完整答案。不要保留任何未经核实的虚假事实——宁可说\"未在索引中找到\"也不要编造。",
-				},
-			)
-			continue
+			return content, issues, toolTrace, graph, nil
 		}
 
 		// 有工具调用：把 assistant(tool_calls) 加进对话，逐个执行并回灌结果
@@ -395,7 +227,7 @@ func runCodeAgent(ctx context.Context, model, baseURL, apiKey, workDir string, m
 			})
 			toolTrace = append(toolTrace, fmt.Sprintf("%s(%s)", tc.Name, truncateText(tc.Args, 80)))
 			result := executeCodeTool(ctx, workDir, tc.Name, tc.Args)
-			collectGraphNode(tc.Name, tc.Args, result, addGraph) // 用 result 解析 kind
+			collectGraphNode(tc.Name, tc.Args, result, addGraph)
 			messages = append(messages, map[string]any{
 				"role":         "tool",
 				"tool_call_id": tc.ID,
@@ -403,6 +235,127 @@ func runCodeAgent(ctx context.Context, model, baseURL, apiKey, workDir string, m
 			})
 		}
 	}
+}
+
+// runBestOfNAgent 是对外入口：每一轮并行跑 N 个独立 runCodeAgentOnce，
+// 选 codegraph issues 最少的赢家（相等比答案长度）；
+//   - issues > 0 → 组织上下文（赢家答案 + issues 反馈），整轮重跑
+//   - issues == 0 → 对赢家做 read_source 源码精校
+//       · source 有错 → 组织上下文（+ source issues），整轮重跑
+//       · source 通过 → 返回赢家答案
+// 不约束轮数，靠 ctx 兜底。N==1 时退化为单路（仍走 source 精校）。
+func runBestOfNAgent(ctx context.Context, model, baseURL, apiKey, workDir string, messages []map[string]any, writeEvent func(string), n int) (string, []string, []map[string]string, error) {
+	if n < 1 {
+		n = 1
+	}
+	emit := func(v any) {
+		b, _ := json.Marshal(v)
+		writeEvent(string(b))
+	}
+
+	// baseMessages 快照：[system, 历史轮 user/assistant, 本轮 user]，重试时回到这个基线
+	baseLen := len(messages)
+	baseMessages := make([]map[string]any, baseLen)
+	copy(baseMessages, messages)
+
+	temps := []float64{0.3, 0.7, 1.0}
+
+	type result struct {
+		answer    string
+		issues    []string
+		toolTrace []string
+		graph     []map[string]string
+		err       error
+	}
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", nil, nil, err
+		}
+
+		// 并行 N 个独立 agent（探索隔离，互不干扰），等全部完成
+		var wg sync.WaitGroup
+		results := make([]result, n)
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go func(idx int) {
+				defer wg.Done()
+				msgs := deepCopyMessages(messages)
+				// 只有第一路写 SSE（让前端看到一条探索过程），其余静默
+				w := writeEvent
+				if idx != 0 {
+					w = func(string) {}
+				}
+				ans, issues, tt, g, err := runCodeAgentOnce(ctx, model, baseURL, apiKey, workDir, msgs, w, temps[idx%len(temps)])
+				results[idx] = result{ans, issues, tt, g, err}
+			}(i)
+		}
+		wg.Wait()
+
+		// best-of-N：选 issues 最少（相等比答案长度）的赢家
+		winner := -1
+		for i, r := range results {
+			if r.err != nil {
+				continue
+			}
+			if winner < 0 ||
+				len(r.issues) < len(results[winner].issues) ||
+				(len(r.issues) == len(results[winner].issues) && len(r.answer) > len(results[winner].answer)) {
+				winner = i
+			}
+		}
+		if winner < 0 {
+			// 全部失败
+			for _, r := range results {
+				if r.err != nil {
+					return "", nil, nil, r.err
+				}
+			}
+			return "", nil, nil, fmt.Errorf("best-of-n: 无有效结果")
+		}
+		best := results[winner]
+		if n > 1 {
+			emit(map[string]any{"event": "tool", "name": "best_of_n_selected", "args": fmt.Sprintf("%d 路中选 issues=%d", n, len(best.issues))})
+		}
+
+		// issues > 0 → 组织上下文重跑
+		if len(best.issues) > 0 {
+			emit(map[string]any{"event": "tool", "name": "fact_check_failed", "args": fmt.Sprintf("%d issue(s)", len(best.issues))})
+			messages = buildRetryMessages(baseMessages, baseLen, best.answer,
+				"上一轮回答中以下事实点未通过 codegraph 校验（可能函数不存在、调用关系不存在、文件路径不对）：\n\n"+
+					strings.Join(best.issues, "\n")+
+					"\n\n请使用工具重新核实这些点（必要时调用 search_symbol / find_callers / find_callees / read_source），"+
+					"然后给出修订版完整答案。不要保留任何未经核实的虚假事实——宁可说\"未在索引中找到\"也不要编造。")
+			continue
+		}
+
+		// issues == 0 → source 精校
+		emit(map[string]any{"event": "tool", "name": "fact_check_source", "args": ""})
+		srcIssues := factCheckCodeAnswerBySource(ctx, model, baseURL, apiKey, workDir, best.answer)
+		if len(srcIssues) > 0 {
+			emit(map[string]any{"event": "tool", "name": "fact_check_source_failed", "args": fmt.Sprintf("%d issue(s)", len(srcIssues))})
+			messages = buildRetryMessages(baseMessages, baseLen, best.answer,
+				"上一轮回答中以下源码细节经 read_source 核实不符（文件/行号/代码片段对不上）：\n\n"+
+					strings.Join(srcIssues, "\n")+
+					"\n\n请重新核对这些位置的真实源码，给出修订版完整答案，不要编造行号或代码片段。")
+			continue
+		}
+
+		// 全部通过 → 返回赢家
+		emit(map[string]any{"event": "tool", "name": "fact_check_passed", "args": ""})
+		return best.answer, best.toolTrace, best.graph, nil
+	}
+}
+
+// buildRetryMessages 组织重试上下文：baseMessages + assistant(赢家答案) + user(反馈)
+func buildRetryMessages(baseMessages []map[string]any, baseLen int, answer, feedback string) []map[string]any {
+	msgs := make([]map[string]any, 0, baseLen+2)
+	msgs = append(msgs, baseMessages...)
+	msgs = append(msgs,
+		map[string]any{"role": "assistant", "content": answer},
+		map[string]any{"role": "user", "content": feedback},
+	)
+	return msgs
 }
 
 // collectGraphNode 从一次工具调用的参数 + 返回结果里抽取图谱节点。
@@ -619,12 +572,12 @@ func factCheckCodeAnswer(ctx context.Context, model, baseURL, apiKey, workDir, a
 严格输出一个 JSON 数组，每项形如：
 - 函数声明：{"kind":"function","name":"<函数名>","file":"<相对路径,可空>"}
 - 调用关系：{"kind":"call","caller":"<A>","callee":"<B>"}
-只抽答案明确陈述存在/调用的，不抽笼统描述。最多 8 条。
+只抽答案明确陈述存在/调用的，不抽笼统描述。穷尽所有事实声明，不要遗漏。
 不要 markdown，不要解释，直接 JSON 数组。回答里没事实声明则输出 []。`
 	raw, err := llmComplete(ctx, model, baseURL, apiKey, []map[string]string{
 		{"role": "system", "content": sys},
 		{"role": "user", "content": answer},
-	}, 512)
+	}, 2048)
 	if err != nil {
 		return nil // fail-open
 	}
@@ -649,7 +602,7 @@ func factCheckCodeAnswer(ctx context.Context, model, baseURL, apiKey, workDir, a
 	var issues []string
 	pushed := map[string]bool{}
 	push := func(s string) {
-		if pushed[s] || len(issues) >= 8 {
+		if pushed[s] {
 			return
 		}
 		pushed[s] = true
@@ -728,7 +681,101 @@ func factCheckCodeAnswer(ctx context.Context, model, baseURL, apiKey, workDir, a
 	return issues
 }
 
-// llmComplete 非流式调一次 chat/completions，返回 assistant 文本。
+// factCheckCodeAnswerBySource 第 4 轮精校：让 LLM 抽答案里的"源码细节声明"，
+// 用 read_source 直接读对应文件验证（不依赖 codegraph 索引，更接地气）。
+// 抽的 claim 形如：{"file":"app/x.php","line":1285,"snippet":"function update_story_status"}
+// 验证：读 file 第 line ± 5 行，看 snippet 是否真在那一段里。
+func factCheckCodeAnswerBySource(ctx context.Context, model, baseURL, apiKey, workDir, answer string) []string {
+	if strings.TrimSpace(answer) == "" {
+		return nil
+	}
+	sys := `你是源码细节抽取器。从给定的代码分析回答里抽出"可以通过读源码精确验证的细节声明"。
+严格输出一个 JSON 数组，每项形如：
+{"file":"<相对路径>","line":<行号>,"snippet":"<期望该位置存在的代码片段，单行特征文本，10-80 字符>"}
+只抽答案明确陈述「在 X 文件第 N 行有 Y」这种声明，不抽笼统描述。穷尽所有此类声明，不要遗漏。
+snippet 必须是答案中明确描述的代码特征（函数签名 / 关键 if 条件 / 调用语句等），不要编造。
+不要 markdown，不要解释，直接 JSON 数组。回答里没此类声明则输出 []。`
+
+	raw, err := llmComplete(ctx, model, baseURL, apiKey, []map[string]string{
+		{"role": "system", "content": sys},
+		{"role": "user", "content": answer},
+	}, 2048)
+	if err != nil {
+		return nil // fail-open
+	}
+	raw = strings.TrimSpace(raw)
+	if i := strings.Index(raw, "["); i >= 0 {
+		if j := strings.LastIndex(raw, "]"); j > i {
+			raw = raw[i : j+1]
+		}
+	}
+	var claims []struct {
+		File    string `json:"file"`
+		Line    int    `json:"line"`
+		Snippet string `json:"snippet"`
+	}
+	if json.Unmarshal([]byte(raw), &claims) != nil || len(claims) == 0 {
+		return nil
+	}
+
+	var issues []string
+	pushed := map[string]bool{}
+	push := func(s string) {
+		if pushed[s] {
+			return
+		}
+		pushed[s] = true
+		issues = append(issues, "- "+s)
+	}
+
+	for _, cl := range claims {
+		select {
+		case <-ctx.Done():
+			return issues
+		default:
+		}
+		if cl.File == "" || cl.Line <= 0 || strings.TrimSpace(cl.Snippet) == "" {
+			continue
+		}
+		// 读 line ± 5 行
+		start, end := cl.Line-5, cl.Line+5
+		if start < 1 {
+			start = 1
+		}
+		src := readSource(workDir, cl.File, start, end)
+		// 错误（路径不存在/越界等）→ 文件路径声明本身就有问题
+		if strings.HasPrefix(src, "错误：") {
+			push(fmt.Sprintf("声称的文件 `%s` 无法读取（%s）", cl.File, strings.TrimPrefix(src, "错误：")))
+			continue
+		}
+		// 简单匹配：snippet 关键 token 是否出现在源码段内（不区分空白）
+		needle := normalizeForMatch(cl.Snippet)
+		hay := normalizeForMatch(src)
+		if !strings.Contains(hay, needle) {
+			push(fmt.Sprintf("声称 `%s:%d` 处有 `%s`，源码该段未匹配到", cl.File, cl.Line, truncateText(cl.Snippet, 60)))
+		}
+	}
+	return issues
+}
+
+// normalizeForMatch 折叠空白用于片段匹配（snippet 与源码空格/换行可能不同）
+func normalizeForMatch(s string) string {
+	s = strings.ToLower(s)
+	var b strings.Builder
+	prevSpace := false
+	for _, r := range s {
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+			if !prevSpace {
+				b.WriteByte(' ')
+				prevSpace = true
+			}
+			continue
+		}
+		b.WriteRune(r)
+		prevSpace = false
+	}
+	return b.String()
+}
 // 用于生成 follow-ups / suggestions 这类一次性轻量任务。
 func llmComplete(ctx context.Context, model, baseURL, apiKey string, messages []map[string]string, maxTokens int) (string, error) {
 	base := strings.TrimSuffix(baseURL, "/")
