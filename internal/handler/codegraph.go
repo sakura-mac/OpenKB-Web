@@ -219,6 +219,10 @@ func CodeStream(c *gin.Context) {
 	if llmModel == "" {
 		llmModel = "deepseek/deepseek-chat"
 	}
+	auxModel := cfg.LLMAuxModel // 辅助模型：fact-check / follow-ups 等轻量任务；为空则回退到主模型
+	if auxModel == "" {
+		auxModel = llmModel
+	}
 
 	// 组装多轮对话：system + 已存会话历史 + 当前 user。
 	messages := []map[string]any{
@@ -237,7 +241,7 @@ func CodeStream(c *gin.Context) {
 
 	writeObj(map[string]any{"event": "start", "session_id": req.SessionID})
 
-	answer, tools, graph, err := runBestOfNAgent(c.Request.Context(), llmModel, baseURL, apiKey, cs.Path, messages, writeEvent, 3)
+	answer, tools, graph, err := runBestOfNAgent(c.Request.Context(), llmModel, baseURL, apiKey, cs.Path, messages, writeEvent, 3, auxModel)
 	if err != nil {
 		select {
 		case <-c.Request.Context().Done():
@@ -272,7 +276,7 @@ func CodeStream(c *gin.Context) {
 		}
 		fctx, fcancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
 		defer fcancel()
-		fups := generateCodeFollowUps(fctx, llmModel, baseURL, apiKey, req.Question, answer, lang)
+		fups := generateCodeFollowUps(fctx, auxModel, baseURL, apiKey, req.Question, answer, lang)
 		if len(fups) > 0 {
 			updateCodeTurnFollowUps(req.Space, sid, fups) // 回填持久化
 			writeObj(map[string]any{"event": "follow_ups", "follow_ups": fups})

@@ -131,6 +131,7 @@ export const api = {
       llm_base_url: string
       llm_model: string
       llm_language: string
+      llm_aux_model: string
       openkb_ready: boolean
       openkb_bin?: string
     }>('/api/settings'),
@@ -141,11 +142,18 @@ export const api = {
       llm_has_key: boolean
       llm_base_url: string
       llm_model: string
+      llm_aux_model: string
     }>('/api/settings', 'POST', patch),
   checkSettings: (draft?: Record<string, string>) =>
-    request<{ ok: boolean; status?: number; model?: string; error?: string }>(
-      '/api/settings/check', 'POST', draft || {},
-    ),
+    request<{
+      ok?: boolean
+      main?: { ok: string; model: string; error?: string; status?: string }
+      aux?: { ok: string; model: string; error?: string; status?: string }
+      // 兼容旧格式
+      model?: string
+      status?: number
+      error?: string
+    }>('/api/settings/check', 'POST', draft || {}),
 
   // Bootstrap 进度：启动时轮询（每 1s）直到 ready 或 failed
   bootstrapStatus: () =>

@@ -28,14 +28,15 @@ import (
 // SettingsResponse 是 GET /api/settings 的响应。
 // 注意：llm_api_key 是 mask 形式（sk-***abcd），不暴露明文。
 type SettingsResponse struct {
-	OKBHome     string `json:"okb_home"`
-	SpacesRoot  string `json:"spaces_root"`
-	OKBSpec     string `json:"okb_spec"`
-	LLMApiKey   string `json:"llm_api_key"`   // mask
-	LLMHasKey   bool   `json:"llm_has_key"`   // 真实是否设置了，给前端做"未配置"提示
-	LLMBaseURL  string `json:"llm_base_url"`
-	LLMModel    string `json:"llm_model"`
-	LLMLanguage string `json:"llm_language"`
+	OKBHome      string `json:"okb_home"`
+	SpacesRoot   string `json:"spaces_root"`
+	OKBSpec      string `json:"okb_spec"`
+	LLMApiKey    string `json:"llm_api_key"`    // mask
+	LLMHasKey    bool   `json:"llm_has_key"`    // 真实是否设置了，给前端做"未配置"提示
+	LLMBaseURL   string `json:"llm_base_url"`
+	LLMModel     string `json:"llm_model"`
+	LLMLanguage  string `json:"llm_language"`
+	LLMAuxModel  string `json:"llm_aux_model"`
 	// 状态：bootstrap 是否就绪
 	OpenKBReady bool   `json:"openkb_ready"`
 	OpenKBBin   string `json:"openkb_bin,omitempty"`
@@ -45,16 +46,17 @@ type SettingsResponse struct {
 func GetSettings(c *gin.Context) {
 	cfg := config.Snapshot()
 	c.JSON(http.StatusOK, SettingsResponse{
-		OKBHome:     cfg.OKBHome,
-		SpacesRoot:  cfg.SpacesRoot,
-		OKBSpec:     cfg.OKBSpec,
-		LLMApiKey:   maskKey(cfg.LLMApiKey),
-		LLMHasKey:   cfg.LLMApiKey != "",
-		LLMBaseURL:  cfg.LLMBaseURL,
-		LLMModel:    cfg.LLMModel,
-		LLMLanguage: cfg.LLMLanguage,
-		OpenKBReady: cfg.OpenKBBin != "",
-		OpenKBBin:   cfg.OpenKBBin,
+		OKBHome:      cfg.OKBHome,
+		SpacesRoot:   cfg.SpacesRoot,
+		OKBSpec:      cfg.OKBSpec,
+		LLMApiKey:    maskKey(cfg.LLMApiKey),
+		LLMHasKey:    cfg.LLMApiKey != "",
+		LLMBaseURL:   cfg.LLMBaseURL,
+		LLMModel:     cfg.LLMModel,
+		LLMLanguage:  cfg.LLMLanguage,
+		LLMAuxModel:  cfg.LLMAuxModel,
+		OpenKBReady:  cfg.OpenKBBin != "",
+		OpenKBBin:    cfg.OpenKBBin,
 	})
 }
 
@@ -62,12 +64,13 @@ func GetSettings(c *gin.Context) {
 // 所有字段可选；省略 / 空字符串 = "保持原值不变"。
 // 唯一例外：LLMApiKey 如果传 "__CLEAR__" 就清空（明确删除）。
 type SettingsPatch struct {
-	SpacesRoot  string `json:"spaces_root"`
-	OKBSpec     string `json:"okb_spec"`
-	LLMApiKey   string `json:"llm_api_key"`
-	LLMBaseURL  string `json:"llm_base_url"`
-	LLMModel    string `json:"llm_model"`
-	LLMLanguage string `json:"llm_language"`
+	SpacesRoot   string `json:"spaces_root"`
+	OKBSpec      string `json:"okb_spec"`
+	LLMApiKey    string `json:"llm_api_key"`
+	LLMBaseURL   string `json:"llm_base_url"`
+	LLMModel     string `json:"llm_model"`
+	LLMLanguage  string `json:"llm_language"`
+	LLMAuxModel  string `json:"llm_aux_model"`
 }
 
 // UpdateSettings 持久化用户提交的字段。
@@ -88,6 +91,7 @@ func UpdateSettings(c *gin.Context) {
 		LLMBaseURL:  patch.LLMBaseURL,
 		LLMModel:    patch.LLMModel,
 		LLMLanguage: patch.LLMLanguage,
+		LLMAuxModel: patch.LLMAuxModel,
 	}
 	if err := config.Save(cfg); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "save: " + err.Error()})
@@ -114,7 +118,6 @@ func CheckSettings(c *gin.Context) {
 	saved := config.Snapshot()
 
 	// body 是可选的（旧调用方不带 body 传空 {} 也兼容）。
-	// 解析失败不报错——直接当作未传草稿。
 	var draft SettingsPatch
 	if c.Request.ContentLength > 0 {
 		_ = c.ShouldBindJSON(&draft)
@@ -126,7 +129,8 @@ func CheckSettings(c *gin.Context) {
 		apiKey = draft.LLMApiKey
 	}
 	baseURL := pickStr(draft.LLMBaseURL, saved.LLMBaseURL)
-	rawModel := pickStr(draft.LLMModel, saved.LLMModel)
+	mainModel := pickStr(draft.LLMModel, saved.LLMModel)
+	auxModel := pickStr(draft.LLMAuxModel, saved.LLMAuxModel)
 
 	if apiKey == "" {
 		c.JSON(http.StatusOK, gin.H{"ok": false, "error": "未配置 API key"})
@@ -137,12 +141,26 @@ func CheckSettings(c *gin.Context) {
 		return
 	}
 
-	// model 名字可能带 provider 前缀（"deepseek/deepseek-chat"），调实际 API 时要剥掉
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+	defer cancel()
+
+	result := gin.H{
+		"ok":    true,
+		"main":  testOneModel(ctx, apiKey, baseURL, mainModel),
+	}
+	// 辅助模型也一起测（如果填了的话）
+	if auxModel != "" {
+		result["aux"] = testOneModel(ctx, apiKey, baseURL, auxModel)
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+// testOneModel 发一次最小 chat completion 验证单个模型是否可用。
+func testOneModel(ctx context.Context, apiKey, baseURL, rawModel string) map[string]string {
 	model := rawModel
 	if i := strings.LastIndex(model, "/"); i >= 0 {
 		model = model[i+1:]
 	}
-
 	endpoint := strings.TrimRight(baseURL, "/") + "/v1/chat/completions"
 	body := map[string]any{
 		"model": model,
@@ -154,36 +172,27 @@ func CheckSettings(c *gin.Context) {
 	}
 	bodyJSON, _ := json.Marshal(body)
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
-	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, strings.NewReader(string(bodyJSON)))
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"ok": false, "error": err.Error()})
-		return
+		return map[string]string{"ok": "false", "model": model, "error": err.Error()}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"ok": false, "error": err.Error()})
-		return
+		return map[string]string{"ok": "false", "model": model, "error": err.Error()}
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		c.JSON(http.StatusOK, gin.H{
-			"ok":     true,
-			"model":  model,
-			"status": resp.StatusCode,
-		})
-		return
+		return map[string]string{"ok": "true", "model": model}
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"ok":     false,
-		"status": resp.StatusCode,
-		"error":  fmt.Sprintf("HTTP %d: %s", resp.StatusCode, truncate(string(respBody), 400)),
-	})
+	return map[string]string{
+		"ok": "false", "model": model,
+		"status": fmt.Sprintf("%d", resp.StatusCode),
+		"error": fmt.Sprintf("HTTP %d: %s", resp.StatusCode, truncate(string(respBody), 400)),
+	}
 }
 
 // pickStr 草稿优先，空则回退保存值。

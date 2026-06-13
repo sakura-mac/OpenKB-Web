@@ -314,8 +314,29 @@ func generateCodeFollowUps(ctx context.Context, model, baseURL, apiKey, userQ, a
 		return nil
 	}
 	fups := parseJSONStringArray(content, 3)
-	if len(fups) == 0 {
-		log.Printf("[follow_ups] JSON 解析失败或结果为空，LLM 返回: %s", truncateText(content, 200))
+
+	// 空结果重试一次（主流程 best-of-N + source check 并发可能导致瞬时限流）
+	if len(fups) == 0 && strings.TrimSpace(content) == "" {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(1 * time.Second):
+		}
+		log.Printf("[follow_ups] 首次返回空，1s 后重试")
+		content2, err2 := llmComplete(ctx, model, baseURL, apiKey, []map[string]string{
+			{"role": "system", "content": sys},
+			{"role": "user", "content": "问题:\n" + userQ + "\n\n回答:\n" + answer},
+		}, 256)
+		if err2 != nil {
+			log.Printf("[follow_ups] 重试 LLM 调用也失败: %v", err2)
+			return nil
+		}
+		fups = parseJSONStringArray(content2, 3)
+		if len(fups) == 0 {
+			log.Printf("[follow_ups] 重试后仍为空，LLM 返回: %s", truncateText(content2, 200))
+		}
+	} else if len(fups) == 0 {
+		log.Printf("[follow_ups] JSON 解析失败或结果非空但解析失败，LLM 返回: %s", truncateText(content, 200))
 	}
 	return fups
 }

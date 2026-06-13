@@ -56,10 +56,11 @@ type Config struct {
 	OpenKBPython string `json:"-"` // 装好后该 venv 里的 python 绝对路径
 
 	// LLM（用户在 Web 设置页可改，写到 config.json）
-	LLMApiKey   string `json:"llm_api_key,omitempty"`
-	LLMBaseURL  string `json:"llm_base_url,omitempty"`
-	LLMModel    string `json:"llm_model,omitempty"`
-	LLMLanguage string `json:"llm_language,omitempty"`
+	LLMApiKey    string `json:"llm_api_key,omitempty"`
+	LLMBaseURL   string `json:"llm_base_url,omitempty"`
+	LLMModel     string `json:"llm_model,omitempty"`
+	LLMLanguage  string `json:"llm_language,omitempty"`
+	LLMAuxModel  string `json:"llm_aux_model,omitempty"` // 辅助模型：fact-check / follow-ups 等轻量任务（如 flash）
 }
 
 // C 全局唯一实例。读多写少，访问加 mu 锁；通过 Snapshot()/Update() 来读写。
@@ -216,6 +217,11 @@ func Save(patch Config) error {
 		C.LLMLanguage = ""
 	} else if patch.LLMLanguage != "" {
 		C.LLMLanguage = patch.LLMLanguage
+	}
+	if patch.LLMAuxModel == clear {
+		C.LLMAuxModel = ""
+	} else if patch.LLMAuxModel != "" {
+		C.LLMAuxModel = patch.LLMAuxModel
 	}
 	cfg := C
 	mu.Unlock()

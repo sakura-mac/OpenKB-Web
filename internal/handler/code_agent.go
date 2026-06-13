@@ -244,7 +244,7 @@ func runCodeAgentOnce(ctx context.Context, model, baseURL, apiKey, workDir strin
 //       · source 有错 → 组织上下文（+ source issues），整轮重跑
 //       · source 通过 → 返回赢家答案
 // 不约束轮数，靠 ctx 兜底。N==1 时退化为单路（仍走 source 精校）。
-func runBestOfNAgent(ctx context.Context, model, baseURL, apiKey, workDir string, messages []map[string]any, writeEvent func(string), n int) (string, []string, []map[string]string, error) {
+func runBestOfNAgent(ctx context.Context, model, baseURL, apiKey, workDir string, messages []map[string]any, writeEvent func(string), n int, auxModel string) (string, []string, []map[string]string, error) {
 	if n < 1 {
 		n = 1
 	}
@@ -331,7 +331,7 @@ func runBestOfNAgent(ctx context.Context, model, baseURL, apiKey, workDir string
 
 		// issues == 0 → source 精校
 		emit(map[string]any{"event": "tool", "name": "fact_check_source", "args": ""})
-		srcIssues := factCheckCodeAnswerBySource(ctx, model, baseURL, apiKey, workDir, best.answer)
+		srcIssues := factCheckCodeAnswerBySource(ctx, auxModel, baseURL, apiKey, workDir, best.answer)
 		if len(srcIssues) > 0 {
 			emit(map[string]any{"event": "tool", "name": "fact_check_source_failed", "args": fmt.Sprintf("%d issue(s)", len(srcIssues))})
 			messages = buildRetryMessages(baseMessages, baseLen, best.answer,

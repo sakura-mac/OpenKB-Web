@@ -81,11 +81,18 @@
             </div>
           </div>
 
+          <div class="form-group">
+            <label>{{ t('settings.auxModel') }}</label>
+            <input v-model="form.llm_aux_model" type="text" :placeholder="t('settings.auxModelPlaceholder')" />
+            <p class="form-help">{{ t('settings.auxModelHelp') }}</p>
+          </div>
+
           <div class="check-row">
             <button class="btn btn-sm" :disabled="checking" @click="doCheck">
               {{ checking ? t('settings.checkingBtn') : t('settings.checkBtn') }}
             </button>
             <span v-if="checkMsg" :class="['check-msg', checkOk ? 'ok' : 'err']">{{ checkMsg }}</span>
+            <span v-if="checkAuxMsg && form.llm_aux_model" :class="['check-msg', checkAuxOk ? 'ok' : 'err']" style="margin-left:8px">{{ checkAuxMsg }}</span>
           </div>
         </section>
 
@@ -139,6 +146,8 @@ const loading = ref(true)
 const checking = ref(false)
 const checkMsg = ref('')
 const checkOk = ref(false)
+const checkAuxMsg = ref('')
+const checkAuxOk = ref(false)
 
 // 自动保存状态：idle 干净 | dirty 有未保存改动 | saving 上传中 | saved 刚保存完 | error 失败
 type AutosaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'error'
@@ -155,6 +164,7 @@ const raw = reactive({
   llm_base_url: '',
   llm_model: '',
   llm_language: '',
+  llm_aux_model: '',
   openkb_ready: false,
   openkb_bin: '' as string | undefined,
 })
@@ -165,6 +175,7 @@ const form = reactive({
   llm_base_url: '',
   llm_model: '',
   llm_language: 'zh',
+  llm_aux_model: '',
   spaces_root: '',
   okb_spec: '',
   llm_has_key: false,  // mirror raw 给模板用
@@ -194,6 +205,7 @@ async function load() {
     form.llm_base_url = res.llm_base_url
     form.llm_model = res.llm_model
     form.llm_language = res.llm_language || 'zh'
+    form.llm_aux_model = res.llm_aux_model || ''
     form.spaces_root = ''
     form.okb_spec = ''
     form.llm_api_key = ''
@@ -225,6 +237,7 @@ function setupAutosave() {
       form.llm_base_url,
       form.llm_model,
       form.llm_language,
+      form.llm_aux_model,
       form.spaces_root,
       form.okb_spec,
     ],
@@ -243,6 +256,7 @@ async function doAutoSave() {
   if (form.llm_base_url && form.llm_base_url !== raw.llm_base_url) patch.llm_base_url = form.llm_base_url
   if (form.llm_model && form.llm_model !== raw.llm_model) patch.llm_model = form.llm_model
   if (form.llm_language && form.llm_language !== raw.llm_language) patch.llm_language = form.llm_language
+  if (form.llm_aux_model && form.llm_aux_model !== raw.llm_aux_model) patch.llm_aux_model = form.llm_aux_model
   if (form.spaces_root) patch.spaces_root = form.spaces_root
   if (form.okb_spec) patch.okb_spec = form.okb_spec
   if (Object.keys(patch).length === 0) {
@@ -273,19 +287,34 @@ async function doAutoSave() {
 async function doCheck() {
   checking.value = true
   checkMsg.value = ''
+  checkAuxMsg.value = ''
   try {
-    // 把当前 form 草稿带给后端：未保存的输入也能直接测试。
     const draft: Record<string, string> = {}
     if (form.llm_api_key && form.llm_api_key !== '__CLEAR__') draft.llm_api_key = form.llm_api_key
     if (form.llm_base_url) draft.llm_base_url = form.llm_base_url
     if (form.llm_model) draft.llm_model = form.llm_model
+    if (form.llm_aux_model) draft.llm_aux_model = form.llm_aux_model
     const res = await api.checkSettings(draft)
-    if (res.ok) {
-      checkMsg.value = t('settings.checkPassed', { model: res.model || '' })
+    // 主模型结果
+    if (res.main?.ok === 'true' || res.ok === true) {
+      checkMsg.value = `✓ ${res.main?.model || res.model || ''}`
       checkOk.value = true
     } else {
-      checkMsg.value = t('settings.checkFailed', { error: res.error || 'unknown' })
+      checkMsg.value = `✗ ${res.main?.error || res.error || 'unknown'}`
       checkOk.value = false
+    }
+    // 辅助模型结果
+    if (res.aux) {
+      if (res.aux.ok === 'true') {
+        checkAuxMsg.value = `✓ ${res.aux.model || ''}`
+        checkAuxOk.value = true
+      } else {
+        checkAuxMsg.value = `✗ ${res.aux.error || 'unknown'}`
+        checkAuxOk.value = false
+      }
+    } else {
+      checkAuxMsg.value = ''
+      checkAuxOk.value = false
     }
   } catch (e: any) {
     checkMsg.value = t('settings.checkFailed', { error: e?.message || e })
