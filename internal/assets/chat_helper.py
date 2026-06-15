@@ -28,6 +28,31 @@ def _load_kb_config(kb_dir: Path) -> dict[str, Any]:
     return load_config(cfg_path) or {}
 
 
+def _normalize_model(model: str) -> str:
+    """确保 model 带 provider 前缀（LiteLLM 要求 provider/model 格式）。
+
+    如果已有 '/' 前缀，直接返回；否则按环境变量推断 provider。
+    """
+    if "/" in model:
+        return model
+    # 按环境变量中的 base_url 推断 provider
+    import os
+
+    base_url = (os.environ.get("OPENAI_BASE_URL") or os.environ.get("DEEPSEEK_API_BASE") or "").lower()
+    if "deepseek" in base_url:
+        return f"deepseek/{model}"
+    if "openai" in base_url:
+        return f"openai/{model}"
+    if "anthropic" in base_url:
+        return f"anthropic/{model}"
+    if "gemini" in base_url or "googleapis" in base_url:
+        return f"gemini/{model}"
+    if "groq" in base_url:
+        return f"groq/{model}"
+    # 兜底：默认 deepseek（项目默认 base_url 就是 deepseek）
+    return f"deepseek/{model}"
+
+
 def _setup_env(kb_dir: Path) -> None:
     """直接复用 OpenKB CLI 的 _setup_llm_key 逻辑，确保 provider 路由、
     OPENAI_API_KEY/OPENAI_BASE_URL/DEEPSEEK_API_KEY 等所有需要的环境变量都设上。
@@ -48,7 +73,7 @@ async def _send(kb_dir: Path, session_id: str | None, message: str) -> dict[str,
     from openkb.agent.query import MAX_TURNS, build_chat_agent
 
     cfg = _load_kb_config(kb_dir)
-    model = cfg.get("model", "deepseek/deepseek-chat")
+    model = _normalize_model(cfg.get("model", "deepseek/deepseek-chat"))
     language = cfg.get("language", "zh")
 
     # 加载或新建 session
@@ -130,7 +155,7 @@ async def _stream(kb_dir: Path, session_id: str | None, message: str) -> None:
         from openkb.agent.query import MAX_TURNS, build_chat_agent
 
         cfg = _load_kb_config(kb_dir)
-        model = cfg.get("model", "deepseek/deepseek-chat")
+        model = _normalize_model(cfg.get("model", "deepseek/deepseek-chat"))
         language = cfg.get("language", "zh")
 
         if session_id:
@@ -234,7 +259,7 @@ def _follow_ups(kb_dir: Path, user_q: str, answer: str, lang: str) -> dict[str, 
     answer = answer[:1500]
 
     cfg = _load_kb_config(kb_dir)
-    model = cfg.get("model", "deepseek/deepseek-chat")
+    model = _normalize_model(cfg.get("model", "deepseek/deepseek-chat"))
 
     if lang == "en":
         system_prompt = (

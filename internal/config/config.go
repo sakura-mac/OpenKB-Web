@@ -26,6 +26,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/joho/godotenv"
@@ -173,6 +174,29 @@ func Snapshot() Config {
 	return C
 }
 
+// normalizeModel 确保 model 带 provider 前缀（LiteLLM 要求 provider/model 格式）。
+// 已有 "/" 前缀直接返回；否则按 baseURL 域名特征推断 provider，兜底 deepseek。
+func normalizeModel(model, baseURL string) string {
+	if strings.Contains(model, "/") {
+		return model
+	}
+	u := strings.ToLower(baseURL)
+	switch {
+	case strings.Contains(u, "deepseek"):
+		return "deepseek/" + model
+	case strings.Contains(u, "openai"):
+		return "openai/" + model
+	case strings.Contains(u, "anthropic"):
+		return "anthropic/" + model
+	case strings.Contains(u, "gemini") || strings.Contains(u, "googleapis"):
+		return "gemini/" + model
+	case strings.Contains(u, "groq"):
+		return "groq/" + model
+	default:
+		return "deepseek/" + model
+	}
+}
+
 // Save 把传入的 patch 应用到全局 C 并写盘 config.json。
 // 仅持久化 patch 里非空的字段（避免用户只改 LLMApiKey 时把 Port 也清掉）。
 //
@@ -211,7 +235,7 @@ func Save(patch Config) error {
 	if patch.LLMModel == clear {
 		C.LLMModel = ""
 	} else if patch.LLMModel != "" {
-		C.LLMModel = patch.LLMModel
+		C.LLMModel = normalizeModel(patch.LLMModel, C.LLMBaseURL)
 	}
 	if patch.LLMLanguage == clear {
 		C.LLMLanguage = ""
@@ -221,7 +245,7 @@ func Save(patch Config) error {
 	if patch.LLMAuxModel == clear {
 		C.LLMAuxModel = ""
 	} else if patch.LLMAuxModel != "" {
-		C.LLMAuxModel = patch.LLMAuxModel
+		C.LLMAuxModel = normalizeModel(patch.LLMAuxModel, C.LLMBaseURL)
 	}
 	cfg := C
 	mu.Unlock()

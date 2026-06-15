@@ -36,6 +36,17 @@ const (
 	maxToolOutput  = 12000 // 单个工具输出最大字符数
 )
 
+// stripProviderPrefix 去掉 LiteLLM 的 "provider/" 前缀。
+// LiteLLM 要求 model 格式为 "provider/model-name"（如 "deepseek/deepseek-v4-pro"），
+// 但直连 OpenAI 兼容 API 时，厂商只认裸名（如 "deepseek-v4-pro"），
+// 传 "deepseek/deepseek-v4-pro" 会报 400 invalid_request_error。
+func stripProviderPrefix(model string) string {
+	if i := strings.Index(model, "/"); i >= 0 {
+		return model[i+1:]
+	}
+	return model
+}
+
 // deepCopyMessages 深拷贝 messages，避免并行 goroutine 共享切片底层数组。
 func deepCopyMessages(src []map[string]any) []map[string]any {
 	dst := make([]map[string]any, len(src))
@@ -134,7 +145,7 @@ func runCodeAgentOnce(ctx context.Context, model, baseURL, apiKey, workDir strin
 	}
 	chatURL := base + "/chat/completions"
 
-	actualModel := model
+	actualModel := stripProviderPrefix(model)
 	tools := codeAgentTools()
 
 	// 收集 agent 探索过的图谱节点（含 kind），done 时给前端画 chip。
@@ -878,7 +889,7 @@ func llmComplete(ctx context.Context, model, baseURL, apiKey string, messages []
 	if !strings.HasSuffix(base, "/v1") {
 		base += "/v1"
 	}
-	actualModel := model
+	actualModel := stripProviderPrefix(model)
 	reqBody := map[string]any{
 		"model":       actualModel,
 		"messages":    messages,

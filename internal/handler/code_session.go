@@ -238,7 +238,7 @@ func CodeSuggestions(c *gin.Context) {
 	}
 	model := cfg.LLMModel
 	if model == "" {
-		model = "deepseek/deepseek-chat"
+		model = "deepseek-chat"
 	}
 
 	// 拿几个高频符号作为线索（best-effort）

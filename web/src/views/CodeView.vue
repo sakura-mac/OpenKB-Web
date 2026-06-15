@@ -133,30 +133,41 @@
             </div>
 
             <!-- 右栏：每轮图谱（持久化）+ 最后一轮 follow-ups -->
-            <div v-if="hasRightCol(i, m)" class="rightcol">
-              <div v-if="getLinks(i).length" class="trace-block">
-                <div class="trace-label">{{ t('query.traceGraph') }}</div>
-                <ul class="graph-chips">
-                  <li
-                    v-for="(l, li) in getLinks(i)" :key="li"
-                    :class="['graph-chip', l.category]"
-                    @click="openGraph(l.name)"
-                    :title="t('code.openGraph')"
-                  >
-                    <span class="gc-dot"></span>
-                    <span class="gc-name">{{ l.name }}</span>
-                    <span v-if="l.kind" class="gc-kind">{{ kindLabel(l.kind) }}</span>
-                    <span class="gc-cat">{{ catLabel(l.category) }}</span>
-                  </li>
-                </ul>
+            <details
+              v-if="hasRightCol(i, m)"
+              class="rightcol-fold"
+              open
+            >
+              <summary class="rightcol-fold-summary">
+                <span class="rc-arrow" aria-hidden="true">▾</span>
+                <span class="rc-label">{{ t('query.rightPanel') }}</span>
+                <span v-if="getLinks(i).length" class="rc-count">· {{ getLinks(i).length }}</span>
+              </summary>
+              <div class="rightcol">
+                <div v-if="getLinks(i).length" class="trace-block">
+                  <div class="trace-label">{{ t('query.traceGraph') }}</div>
+                  <ul class="graph-chips">
+                    <li
+                      v-for="(l, li) in getLinks(i)" :key="li"
+                      :class="['graph-chip', l.category]"
+                      @click="openGraph(l.name)"
+                      :title="t('code.openGraph')"
+                    >
+                      <span class="gc-dot"></span>
+                      <span class="gc-name">{{ l.name }}</span>
+                      <span v-if="l.kind" class="gc-kind">{{ kindLabel(l.kind) }}</span>
+                      <span class="gc-cat">{{ catLabel(l.category) }}</span>
+                    </li>
+                  </ul>
+                </div>
+                <div v-if="i === lastAssistantIdx && m.content && !querying && followUps.length" class="followup-row">
+                  <span class="fu-label">{{ t('query.followUpLabel') }}</span>
+                  <button v-for="(f, fi) in followUps" :key="fi" class="followup-chip" @click="useSuggestion(f)" :title="f">
+                    <span class="fu-text">{{ f }}</span><span class="fu-arrow">→</span>
+                  </button>
+                </div>
               </div>
-              <div v-if="i === lastAssistantIdx && m.content && !querying && followUps.length" class="followup-row">
-                <span class="fu-label">{{ t('query.followUpLabel') }}</span>
-                <button v-for="(f, fi) in followUps" :key="fi" class="followup-chip" @click="useSuggestion(f)" :title="f">
-                  <span class="fu-text">{{ f }}</span><span class="fu-arrow">→</span>
-                </button>
-              </div>
-            </div>
+            </details>
           </div>
         </div>
       </div>
@@ -790,9 +801,60 @@ onUnmounted(() => {
 .gc-kind { font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-2); flex-shrink: 0; padding: 1px 5px; border: 1px solid var(--paper-edge); background: var(--paper-2); }
 .gc-cat { font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-4); flex-shrink: 0; }
 
-/* right col */
-.rightcol { grid-column: 2 / 3; display: flex; flex-direction: column; gap: 14px; margin-top: 14px; padding-left: 16px; }
-@media (min-width: 980px) { .rightcol { grid-column: 3 / 4; margin-top: 0; padding-left: 0; align-self: start; padding-top: 4px; position: sticky; top: 12px; } }
+/* 右栏折叠外壳 .rightcol-fold — 默认展开，定位逻辑从 .rightcol 上移 */
+.rightcol-fold {
+  grid-column: 2 / 3;
+  margin-top: 14px;
+  padding-left: 16px;
+  border-left: 1px solid var(--paper-edge);
+}
+.rightcol-fold[open] { border-left-color: var(--vermilion); }
+@media (min-width: 980px) {
+  .rightcol-fold {
+    grid-column: 3 / 4;
+    margin-top: 0;
+    padding-left: 0;
+    align-self: start;
+    padding-top: 4px;
+    position: sticky;
+    top: 12px;
+  }
+}
+
+/* summary 手柄 */
+.rightcol-fold-summary {
+  list-style: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  margin-bottom: 10px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+  user-select: none;
+  outline: none;
+  transition: color 130ms ease;
+}
+.rightcol-fold-summary::-webkit-details-marker { display: none; }
+.rightcol-fold-summary:hover { color: var(--ink-2); }
+
+.rc-arrow {
+  display: inline-block;
+  font-size: 10px;
+  color: var(--vermilion);
+  transition: transform 150ms ease;
+}
+.rightcol-fold:not([open]) .rc-arrow { transform: rotate(-90deg); }
+
+.rc-label { font-size: 10px; }
+.rc-count { font-family: var(--font-display); font-size: 12px; color: var(--ink-3); }
+
+/* .rightcol 退化为纯内容容器 */
+.rightcol { display: flex; flex-direction: column; gap: 14px; }
 .fu-label { font-family: var(--font-display); font-style: italic; font-size: 12px; color: var(--ink-4); margin-right: 2px; white-space: nowrap; }
 .followup-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
 @media (min-width: 980px) {

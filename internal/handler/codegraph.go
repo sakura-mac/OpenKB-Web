@@ -217,7 +217,7 @@ func CodeStream(c *gin.Context) {
 		baseURL = "https://api.deepseek.com"
 	}
 	if llmModel == "" {
-		llmModel = "deepseek/deepseek-chat"
+		llmModel = "deepseek-chat"
 	}
 	auxModel := cfg.LLMAuxModel // 辅助模型：fact-check / follow-ups 等轻量任务；为空则回退到主模型
 	if auxModel == "" {
