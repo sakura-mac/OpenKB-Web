@@ -368,8 +368,14 @@ func (sw *spaceWatcher) spawnAdd(path string) {
 	taskID := okb.NewTask(spaceName, 1)
 	okb.UpdateTask(taskID, "running", fmt.Sprintf("自动编译：%s", base), nil)
 	go func() {
+		okb.SpaceLock(spaceName).Lock()
+		defer okb.SpaceLock(spaceName).Unlock()
+
 		success, _, stderr := okb.Run([]string{"add", path}, sw.spaceDir)
 		if success {
+			if err := okb.GitCommit(sw.spaceDir, fmt.Sprintf("auto-add: %s", base)); err != nil {
+				log.Printf("[auto-add] git commit failed: %v", err)
+			}
 			okb.UpdateTask(taskID, "done", fmt.Sprintf("已编译：%s", base), []string{base})
 			log.Printf("✓ auto-add %s", path)
 		} else {
@@ -383,23 +389,43 @@ func (sw *spaceWatcher) spawnAdd(path string) {
 	}()
 }
 
-// spawnRemove 后台跑 `openkb remove <basename>`，进 task 队列。
+// spawnRemove 后台跑 `openkb remove <basename>` + `recompile --all -y`，进 task 队列。
+// 与 handler.RemoveDoc 对齐：remove 后必须 recompile 更新交叉引用，否则悬空引用。
 func (sw *spaceWatcher) spawnRemove(base string) {
 	spaceName := filepath.Base(sw.spaceDir)
 	taskID := okb.NewTask(spaceName, 1)
 	okb.UpdateTask(taskID, "running", fmt.Sprintf("自动移除：%s", base), nil)
 	go func() {
-		success, _, stderr := okb.Run([]string{"remove", base}, sw.spaceDir)
-		if success {
-			okb.UpdateTask(taskID, "done", fmt.Sprintf("已移除：%s", base), []string{base})
-			log.Printf("✓ auto-remove %s", base)
-		} else {
+		okb.SpaceLock(spaceName).Lock()
+		defer okb.SpaceLock(spaceName).Unlock()
+
+		// 1) openkb remove --yes（--yes 跳过交互确认，否则 stdin=EOF 导致静默失败）
+		success, _, stderr := okb.Run([]string{"remove", base, "--yes"}, sw.spaceDir)
+		if !success {
 			msg := stderr
 			if len(msg) > 400 {
 				msg = msg[:400] + "..."
 			}
 			okb.UpdateTask(taskID, "error", fmt.Sprintf("移除失败：%s\n%s", base, msg), nil)
 			log.Printf("✗ auto-remove %s: %s", base, stderr)
+			return
 		}
+
+		// 2) recompile 更新交叉引用（remove 不自动更新其他文档中的引用）
+		rcOK, _, rcStderr := okb.Run([]string{"recompile", "--all", "-y"}, sw.spaceDir)
+		if !rcOK {
+			okb.UpdateTask(taskID, "error",
+				fmt.Sprintf("已移除 %s，但重新编译失败：%s", base, rcStderr), nil)
+			log.Printf("✗ auto-remove→recompile %s: %s", base, rcStderr)
+			return
+		}
+
+		// 3) git commit
+		if err := okb.GitCommit(sw.spaceDir, fmt.Sprintf("auto-remove: %s", base)); err != nil {
+			log.Printf("[auto-remove] git commit failed: %v", err)
+		}
+
+		okb.UpdateTask(taskID, "done", fmt.Sprintf("已移除：%s", base), []string{base})
+		log.Printf("✓ auto-remove %s", base)
 	}()
 }

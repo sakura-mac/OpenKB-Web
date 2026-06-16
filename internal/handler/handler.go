@@ -270,8 +270,11 @@ func CreateSpace(c *gin.Context) {
 					config.C.LLMLanguage, config.C.LLMModel)
 				os.WriteFile(configPath, []byte(configContent), 0644)
 			}
-			okb.GitInit(spaceDir)
-			okb.GitCommit(spaceDir, "init: 初始化知识库")
+			if err := okb.GitInit(spaceDir); err != nil {
+				log.Printf("❌ GitInit [%s] failed: %v", name, err)
+			} else if err := okb.GitCommit(spaceDir, "init: 初始化知识库"); err != nil {
+				log.Printf("❌ GitCommit init [%s] failed: %v", name, err)
+			}
 			// 如果用户指定了自定义路径，创建符号链接指向源目录方便访问
 			if customPath != "" {
 				linkPath := filepath.Join(spaceDir, "source")
@@ -598,7 +601,9 @@ func UploadDoc(c *gin.Context) {
 		}
 		// 编译完成，git commit
 		msg := fmt.Sprintf("add: %s", strings.Join(savedFiles, ", "))
-		okb.GitCommit(spaceDir, msg)
+		if err := okb.GitCommit(spaceDir, msg); err != nil {
+			log.Printf("[upload] git commit failed: %v", err)
+		}
 
 		if len(warnings) > 0 {
 			okb.UpdateTask(taskID, "done",
@@ -645,7 +650,7 @@ func RemoveDoc(c *gin.Context) {
 		// 心跳：每 3s 更新进度文案
 		var stop int32
 		started := time.Now()
-		phase := "removing" // "removing" | "recompiling"
+		var phase int32 // 0=removing, 1=recompiling（用 atomic 避免与心跳 goroutine 的 data race）
 		go func() {
 			t := time.NewTicker(3 * time.Second)
 			defer t.Stop()
@@ -656,10 +661,10 @@ func RemoveDoc(c *gin.Context) {
 				}
 				elapsed := int(time.Since(started).Seconds())
 				var msg string
-				if phase == "removing" {
+				if atomic.LoadInt32(&phase) == 0 {
 					msg = fmt.Sprintf("正在删除「%s」并更新交叉引用（已运行 %ds）...", req.Doc, elapsed)
 				} else {
-					msg = fmt.Sprintf("文档已删，正在重新编译知识库（已运行 %ds，预计 30~60s）...", elapsed)
+					msg = fmt.Sprintf("文档已删，正在重新编译知识库（已运行 %ds）...", elapsed)
 				}
 				okb.UpdateTask(taskID, "running", msg, nil)
 			}
@@ -685,12 +690,9 @@ func RemoveDoc(c *gin.Context) {
 				os.Remove(m)
 			}
 		}
-		if err := okb.GitCommit(spaceDir, fmt.Sprintf("remove: %s", req.Doc)); err != nil {
-			log.Printf("[remove] git commit failed: %v", err)
-		}
 
 		// 3) recompile --all -y 重新编译知识库
-		phase = "recompiling"
+		atomic.StoreInt32(&phase, 1)
 		rcOK, _, rcStderr := okb.Run([]string{"recompile", "--all", "-y"}, spaceDir)
 		atomic.StoreInt32(&stop, 1)
 		elapsed := int(time.Since(started).Seconds())
@@ -701,13 +703,17 @@ func RemoveDoc(c *gin.Context) {
 				msg = msg[:400] + "..."
 			}
 			log.Printf("[remove→recompile] failed: %s", rcStderr)
-			// 文档已删但 recompile 失败：报告半成功
+			// 文档已删但 recompile 失败：仍 commit remove 的产物，报告半成功
+			if err := okb.GitCommit(spaceDir, fmt.Sprintf("remove: %s (recompile failed)", req.Doc)); err != nil {
+				log.Printf("[remove] git commit failed: %v", err)
+			}
 			okb.UpdateTask(taskID, "error",
 				fmt.Sprintf("文档已删，但重新编译失败（%ds 后）：%s", elapsed, msg), nil)
 			return
 		}
-		if err := okb.GitCommit(spaceDir, "recompile: 删除文档后重新编译"); err != nil {
-			log.Printf("[remove→recompile] git commit failed: %v", err)
+		// remove + recompile 全部成功，合并为一次 commit
+		if err := okb.GitCommit(spaceDir, fmt.Sprintf("remove: %s", req.Doc)); err != nil {
+			log.Printf("[remove] git commit failed: %v", err)
 		}
 		okb.UpdateTask(taskID, "done",
 			fmt.Sprintf("「%s」已删除并重新编译完成（耗时 %ds）", req.Doc, elapsed), []string{req.Doc})
@@ -771,30 +777,27 @@ func Revert(c *gin.Context) {
 		return
 	}
 
-	output, err := okb.GitRevert(spaceDir, req.Hash)
-	if err != nil {
-		c.JSON(200, gin.H{"success": false, "error": output})
-		return
-	}
+	// 用 git checkout <hash> -- . 恢复到指定 commit 的完整快照（raw + .openkb/ 索引），
+	// 瞬时完成，无需 recompile。因为 .openkb/ 不在 .gitignore，每次 commit 都存了完整索引。
+	taskID := okb.NewTask(req.Space, 1)
+	okb.UpdateTask(taskID, "running", fmt.Sprintf("正在回滚到 %s...", req.Hash[:7]), nil)
 
-	// Recompile after revert to regenerate knowledge.
-	// 单 space 锁内串行：避免和 add/remove 并发抢 .git/index.lock。
 	go func() {
 		spaceLock(req.Space).Lock()
 		defer spaceLock(req.Space).Unlock()
 
-		ok, _, stderr := okb.Run([]string{"recompile", "--all", "-y"}, spaceDir)
-		if !ok {
-			log.Printf("[revert→recompile] failed: %s", stderr)
+		if err := okb.GitRestoreHash(spaceDir, req.Hash); err != nil {
+			okb.UpdateTask(taskID, "error", "回滚失败: "+err.Error(), nil)
 			return
 		}
-		// revert + recompile 的产物一并 commit（GitRevert 已经动了 wiki/，这里再 commit 一次确保最终态完整）
-		if err := okb.GitCommit(spaceDir, "recompile: revert 后重新编译"); err != nil {
-			log.Printf("[revert→recompile] git commit failed: %v", err)
+
+		if err := okb.GitCommit(spaceDir, fmt.Sprintf("restore: 回滚到 %s", req.Hash[:7])); err != nil {
+			log.Printf("[revert] git commit failed: %v", err)
 		}
+		okb.UpdateTask(taskID, "done", "已回滚完成", nil)
 	}()
 
-	c.JSON(200, gin.H{"success": true, "output": output})
+	c.JSON(200, gin.H{"success": true, "task_id": taskID})
 }
 
 func Recompile(c *gin.Context) {
@@ -1133,26 +1136,10 @@ func shortURL(raw string) string {
 
 // ========== Space 级互斥锁 ==========
 //
-// 同一 space 的 add / remove / recompile 必须串行，否则会出现两种问题：
-//  1. .git/index.lock 抢锁失败导致 commit 丢失
-//  2. OpenKB 内部的 wiki/ 写文件也可能被并发改坏
-//
-// 不同 space 之间互不影响。锁存在内存里，进程重启即清。
-var (
-	spaceLocksMu sync.Mutex
-	spaceLocks   = make(map[string]*sync.Mutex)
-)
+// 锁定义在 okb.SpaceLock（被 handler 和 watch 两个包共用）。
+// spaceLock 是内部别名，保持 handler 包内调用点不变。
 
-func spaceLock(space string) *sync.Mutex {
-	spaceLocksMu.Lock()
-	defer spaceLocksMu.Unlock()
-	if lk, ok := spaceLocks[space]; ok {
-		return lk
-	}
-	lk := &sync.Mutex{}
-	spaceLocks[space] = lk
-	return lk
-}
+func spaceLock(space string) *sync.Mutex { return okb.SpaceLock(space) }
 
 // snapshotRawSlugs 返回 raw 目录下所有文件的 slug（去扩展名）集合。
 // 用于 URL add 前后对比，识别 OpenKB 新生成的文件以便回填标题。

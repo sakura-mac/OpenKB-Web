@@ -3,9 +3,30 @@ package okb
 import (
 	"os/exec"
 	"strings"
+	"sync"
 
 	"okb-web/internal/config"
 )
+
+// SpaceLock 返回指定 space 的互斥锁，不同 space 独立。
+// 同一 space 的 add/remove/recompile 必须串行，否则：
+//  1. .git/index.lock 抢锁失败导致 commit 丢失
+//  2. OpenKB 内部的 wiki/ 写文件也可能被并发改坏
+var (
+	spaceLocksMu sync.Mutex
+	spaceLocks   = make(map[string]*sync.Mutex)
+)
+
+func SpaceLock(space string) *sync.Mutex {
+	spaceLocksMu.Lock()
+	defer spaceLocksMu.Unlock()
+	if lk, ok := spaceLocks[space]; ok {
+		return lk
+	}
+	lk := &sync.Mutex{}
+	spaceLocks[space] = lk
+	return lk
+}
 
 // Run executes an openkb command and returns (success, stdout, stderr).
 //

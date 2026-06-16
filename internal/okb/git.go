@@ -9,28 +9,49 @@ import (
 )
 
 // GitInit initializes a git repo in the space directory (idempotent).
-func GitInit(spaceDir string) {
+// Returns error if git init fails (e.g. disk full, permission denied).
+func GitInit(spaceDir string) error {
 	cmd := exec.Command("git", "init")
 	cmd.Dir = spaceDir
-	cmd.Run()
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git init: %w\n%s", err, out)
+	}
 
 	// Set user for commits
-	exec.Command("git", "-C", spaceDir, "config", "user.email", "okb-web@local").Run()
-	exec.Command("git", "-C", spaceDir, "config", "user.name", "OKB Web").Run()
+	if err := exec.Command("git", "-C", spaceDir, "config", "user.email", "okb-web@local").Run(); err != nil {
+		return fmt.Errorf("git config user.email: %w", err)
+	}
+	if err := exec.Command("git", "-C", spaceDir, "config", "user.name", "OKB Web").Run(); err != nil {
+		return fmt.Errorf("git config user.name: %w", err)
+	}
 
 	// Create .gitignore if not exists（直接写文件，避免 echo 不解析 \n 导致 .env 被纳入版本库）
 	// output/ 是 deck/skill 等命令的产物目录，不应进版本库
 	gitignore := filepath.Join(spaceDir, ".gitignore")
 	if _, err := os.Stat(gitignore); err != nil {
-		os.WriteFile(gitignore, []byte(".env\noutput/\n"), 0644)
+		if err := os.WriteFile(gitignore, []byte(".env\noutput/\n"), 0644); err != nil {
+			return fmt.Errorf("write .gitignore: %w", err)
+		}
 	}
+	return nil
 }
 
 // GitCommit stages all changes and commits with the given message.
+// 不使用 --allow-empty：如果 git add -A 失败或没有实际变更，不会产生空 commit。
+// "nothing to commit" 不视为错误（幂等场景下可能无变更）。
 func GitCommit(spaceDir, message string) error {
-	exec.Command("git", "-C", spaceDir, "add", "-A").Run()
-	cmd := exec.Command("git", "-C", spaceDir, "commit", "-m", message, "--allow-empty")
-	return cmd.Run()
+	if err := exec.Command("git", "-C", spaceDir, "add", "-A").Run(); err != nil {
+		return fmt.Errorf("git add -A: %w", err)
+	}
+	out, err := exec.Command("git", "-C", spaceDir, "commit", "-m", message).CombinedOutput()
+	if err != nil {
+		// "nothing to commit" 不是错误——幂等场景下可能无实际变更
+		if strings.Contains(string(out), "nothing to commit") {
+			return nil
+		}
+		return fmt.Errorf("git commit: %w\n%s", err, out)
+	}
+	return nil
 }
 
 // GitLog returns recent commit history as structured entries.
@@ -73,10 +94,28 @@ func GitLog(spaceDir string, limit int) []GitLogEntry {
 }
 
 // GitRevert reverts a specific commit.
+// Deprecated: 对于本地知识库，GitRestoreHash 更好（瞬时恢复，无需重编译）。
 func GitRevert(spaceDir, hash string) (string, error) {
 	cmd := exec.Command("git", "-C", spaceDir, "revert", "--no-edit", hash)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+// GitRestoreHash 用 git checkout <hash> -- . 恢复到指定 commit 的完整快照，
+// 然后创建一个新 commit 保留历史。
+//
+// 对比 git revert：
+//   - revert：只反转 diff，.openkb/ 索引不随 raw 一起恢复 → 需要重编译
+//   - checkout -- .：恢复所有文件（raw + .openkb/）到那个 commit 的状态 → 瞬时完成
+//
+// 因为 .openkb/ 不在 .gitignore 中，每次 commit 都保存了完整索引快照，
+// 所以 checkout 能同时恢复 raw 文件和知识库索引，无需 recompile。
+func GitRestoreHash(spaceDir, hash string) error {
+	// 1) checkout 指定 hash 的所有文件到工作区
+	if out, err := exec.Command("git", "-C", spaceDir, "checkout", hash, "--", ".").CombinedOutput(); err != nil {
+		return fmt.Errorf("git checkout %s -- .: %w\n%s", hash, err, out)
+	}
+	return nil
 }
 
 // GitShowFiles returns files changed in a specific commit.
