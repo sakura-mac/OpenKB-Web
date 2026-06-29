@@ -323,6 +323,9 @@ func SyncCodeSpace(c *gin.Context) {
 	taskID := okb.NewTask(req.Space, 1)
 	okb.UpdateTask(taskID, "running", "CodeGraph 同步中…", nil)
 	go func() {
+		okb.SpaceLock(req.Space).Lock()
+		defer okb.SpaceLock(req.Space).Unlock()
+	
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
 		success, stdout, stderr := codegraph.Run(ctx, cs.Path, "sync")
