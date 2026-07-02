@@ -1,7 +1,19 @@
 <template>
   <div class="app">
-    <aside class="sidebar">
+    <div class="sidebar-wrap" :class="{ collapsed: sidebarCollapsed }">
+    <!-- 折叠态窄条：常驻显示，不受下面 aside 的 hover 透明度影响 -->
+    <div class="sidebar-rail" v-if="sidebarCollapsed" @click="sidebarCollapsed = false">
+      <div class="rail-mark">{{ t('brand.mark') }}</div>
+    </div>
+    <aside class="sidebar" :class="{ collapsed: sidebarCollapsed }">
       <div class="sidebar-header">
+        <button
+          class="sidebar-collapse-btn"
+          @click="sidebarCollapsed = !sidebarCollapsed"
+          :title="sidebarCollapsed ? '固定展开' : '折叠侧栏'"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" :style="{ transform: sidebarCollapsed ? 'rotate(180deg)' : 'none' }"><path d="M15 18l-6-6 6-6"/></svg>
+        </button>
         <div class="masthead">
           <div class="masthead-mark">{{ t('brand.mark') }}</div>
           <div class="masthead-rule"></div>
@@ -59,6 +71,7 @@
         </template>
       </div>
     </aside>
+    </div>
 
     <main class="main-area">
       <header class="topbar" v-if="currentSpace || currentCodeSpace">
@@ -288,6 +301,7 @@ const manageMode = ref(false)
 const selectedSpaces = ref<Set<string>>(new Set())
 const showCreate = ref(false)
 const showSettings = ref(false)
+const sidebarCollapsed = ref(true)
 // 首次启动初始化引导：BootstrapOverlay 内部轮询 /api/bootstrap/status，
 // ready 时 emit('done') → 这里置 true 撤掉遮罩。
 const bootstrapReady = ref(false)
@@ -571,11 +585,80 @@ onMounted(loadSpaces)
 
 .sidebar {
   width: 280px;
+  height: 100%;
   flex-shrink: 0;
   background: var(--paper-2);
   border-right: 1.5px solid var(--ink);
   display: flex; flex-direction: column;
   position: relative;
+}
+
+/* 占位容器：折叠时保持 48px 宽度占位 */
+.sidebar-wrap {
+  flex-shrink: 0;
+  height: 100%;
+  position: relative;
+  width: 280px;
+  overflow: hidden;
+  transition: width 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.sidebar-wrap.collapsed { width: 44px; overflow: visible; }
+
+/* 折叠态窄条 */
+.sidebar-rail {
+  position: absolute; inset: 0;
+  width: 44px; z-index: 10;
+  background: var(--paper-2);
+  border-right: 1.5px solid var(--ink);
+  display: flex; flex-direction: column; align-items: center;
+  padding-top: 20px;
+  cursor: pointer;
+  overflow: hidden;
+}
+.rail-mark {
+  font-family: var(--font-display);
+  font-weight: 600; font-size: 15px;
+  color: var(--ink);
+  font-variation-settings: "opsz" 36, "SOFT" 0, "WONK" 1;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  transition: color 150ms;
+  white-space: nowrap;
+}
+.sidebar-rail:hover .rail-mark { color: var(--vermilion); }
+
+/* 展开态的折叠按钮（header 里的小箭头） */
+.sidebar-collapse-btn {
+  position: absolute;
+  top: 16px; right: 14px;
+  z-index: 5;
+  width: 22px; height: 22px;
+  background: transparent; border: 0;
+  color: var(--ink-4); cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 3px;
+  transition: color 120ms, background 120ms, opacity 150ms;
+  opacity: 0.4;
+}
+.sidebar-collapse-btn:hover { color: var(--vermilion); background: rgba(0,0,0,0.05); opacity: 1; }
+.sidebar-header:hover .sidebar-collapse-btn { opacity: 1; }
+
+/* 折叠态：完整 sidebar 浮为浮层 */
+.sidebar.collapsed {
+  position: absolute;
+  top: 0; left: 0; bottom: 0;
+  width: 280px;
+  z-index: 500;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-12px);
+  transition: opacity 200ms ease, transform 200ms ease;
+  box-shadow: 4px 0 32px -12px rgba(0,0,0,0.25);
+}
+.sidebar-wrap.collapsed:hover .sidebar.collapsed {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
 }
 /* a vertical "spine" hint */
 .sidebar::after {
@@ -869,7 +952,10 @@ onMounted(loadSpaces)
   gap: 4px;
   max-height: 35vh;
   overflow-y: auto;
+  transition: left 200ms ease;
 }
+/* 折叠时 task-strip 左移到窄条边 */
+.sidebar-wrap.collapsed ~ .task-strip { left: 44px; }
 .task-row {
   display: grid;
   grid-template-columns: 32px 1fr;

@@ -68,7 +68,7 @@ else
     fi
     cd "$DIR/web"
     echo "  开始编译，实时显示日志:"
-    npm run build 2>&1 | while IFS= read -r line; do
+    npx vite build 2>&1 | while IFS= read -r line; do
         echo "    $line"
     done
     BUILD_EXIT=${PIPESTATUS[0]}

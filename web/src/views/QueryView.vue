@@ -6,8 +6,23 @@
       展开态：完整列表（标题 / 轮数 / 时间 / 删除）
       用户偏好持久化在 localStorage('okb-sessions-open')
     -->
-    <aside :class="['sessions', { collapsed: !sessionsOpen }]">
-      <template v-if="sessionsOpen">
+    <div class="sessions-wrap" :class="{ collapsed: !sessionsOpen }">
+      <!-- 折叠窄条：仅折叠态显示，hover 整个 wrap 时下面的 aside 浮出 -->
+      <div v-if="!sessionsOpen" class="sessions-rail">
+        <button class="rail-btn rail-expand" :title="t('query.expand') + ' (' + sessions.length + ')'" @click="toggleSessions">
+          <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+            <path d="M5 3 L9 7 L5 11" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+        <div class="rail-divider" aria-hidden="true"></div>
+        <button class="rail-btn" :title="t('query.newSession')" @click="newSession">
+          <svg width="13" height="13" viewBox="0 0 14 14" aria-hidden="true">
+            <path d="M7 3 L7 11 M3 7 L11 7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+          </svg>
+        </button>
+      </div>
+      <!-- 完整面板：展开态常显；折叠态 hover 浮出 -->
+      <aside class="sessions">
         <div class="sessions-head">
           <div>
             <div class="eyebrow">{{ t('query.sessionsEyebrow') }}</div>
@@ -19,6 +34,16 @@
           </div>
         </div>
         <div class="sessions-list">
+          <!-- 当前正在新建的会话（currentSid=''）：置顶显示，让用户知道已切过来 -->
+          <div
+            v-if="currentSid === ''"
+            :class="['session-item', 'active', 'session-item-new']"
+          >
+            <div class="s-title">
+              <span v-if="querying" class="loading-glyph" style="font-size:10px">···</span>
+              {{ querying ? t('query.thinkingDefault') : t('query.threadNew') }}
+            </div>
+          </div>
           <div
             v-for="s in sessions" :key="s.id"
             :class="['session-item', { active: s.id === currentSid }]"
@@ -36,27 +61,8 @@
             {{ t('query.noSessions') }}
           </div>
         </div>
-      </template>
-
-      <!--
-        折叠态：极简 spine（书脊）。两个 icon（展开 / 新建），中间一根细线。
-        不显示会话数——折叠态本来就为了视觉干净，多个数字反而干扰。
-        用户想看会话数 = 直接展开侧栏。
-      -->
-      <div v-else class="sessions-rail">
-        <button class="rail-btn rail-expand" :title="t('query.expand') + ' (' + sessions.length + ')'" @click="toggleSessions">
-          <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
-            <path d="M5 3 L9 7 L5 11" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        </button>
-        <div class="rail-divider" aria-hidden="true"></div>
-        <button class="rail-btn" :title="t('query.newSession')" @click="newSession">
-          <svg width="13" height="13" viewBox="0 0 14 14" aria-hidden="true">
-            <path d="M7 3 L7 11 M3 7 L11 7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-          </svg>
-        </button>
-      </div>
-    </aside>
+      </aside>
+    </div>
 
     <!-- Right: messages -->
     <main class="chat-main">
@@ -174,8 +180,10 @@
             -->
             <div
               v-if="hasRightCol(i, m)"
-              class="rightcol"
+              class="rightcol-fold"
             >
+              <div class="rightcol-scroll">
+              <div class="rightcol">
               <!-- 工具调用时间轴：querying 中边跑边长，done 后保留 -->
               <div v-if="getTools(i).length" class="trace-block">
                 <div class="trace-label">{{ t('query.traceTools') }}</div>
@@ -214,6 +222,8 @@
                   <span class="fu-text">{{ f }}</span>
                   <span class="fu-arrow">→</span>
                 </button>
+              </div>
+              </div>
               </div>
             </div>
           </div>
@@ -261,7 +271,8 @@ import { useI18n } from 'vue-i18n'
 import { api } from '../api'
 import { renderMarkdownWithWikilinks, handleCodeCopyClick } from '../markdown'
 import type { SpaceDetail } from '../types'
-import { useChatState } from '../composables/useChatState'
+import { useChatState, getSessionState, deleteSessionState, migrateSessionState } from '../composables/useChatState'
+import type { SessionState } from '../composables/useChatState'
 import MiniGraph from '../components/MiniGraph.vue'
 
 const { t, locale } = useI18n()
@@ -270,11 +281,19 @@ interface SessionMeta { id: string; title: string; turn_count: number; updated_a
 
 const props = defineProps<{ space: SpaceDetail }>()
 
-// 状态从 composable 读，跨 tab 切换/组件重建保留（按 space 隔离）
 const chatState = useChatState(props.space.name)
 const currentSid = computed({ get: () => chatState.currentSid, set: v => { chatState.currentSid = v } })
-const currentTitle = computed({ get: () => chatState.currentTitle, set: v => { chatState.currentTitle = v } })
-const messages = chatState.messages // 直接引用底层数组，push/splice 都是响应式
+
+// ss 是当前 session 的完整状态（messages/traces/querying 全在里面）
+// currentSid 变化时自动切换，不清除任何数据
+const ss = computed((): SessionState =>
+  getSessionState(props.space.name, chatState.currentSid)
+)
+const messages     = computed(() => ss.value.messages)
+const currentTitle = computed({ get: () => ss.value.currentTitle, set: v => { ss.value.currentTitle = v } })
+const querying     = computed({ get: () => ss.value.querying,     set: v => { ss.value.querying = v } })
+const thinkingMsg  = computed({ get: () => ss.value.thinkingMsg,  set: v => { ss.value.thinkingMsg = v } })
+const followUps    = computed({ get: () => ss.value.followUps,    set: v => { ss.value.followUps = v } })
 
 const sessions = ref<SessionMeta[]>([])
 const question = ref('')
@@ -291,16 +310,14 @@ function toggleSessions() {
   localStorage.setItem(SESSIONS_KEY, sessionsOpen.value ? '1' : '0')
 }
 
-// 这些「正在进行中的一轮」的状态都跨 mount 持久化在 chatState 里：
-// 切走再切回时不会出现「assistant bubble 自己写但 UI 状态错乱」。
-// 用 computed get/set 把 .value 语义保下来，原 doSend 代码不用改。
-const querying = computed({ get: () => chatState.querying, set: v => { chatState.querying = v } })
-const thinkingMsg = computed({ get: () => chatState.thinkingMsg, set: v => { chatState.thinkingMsg = v } })
-const followUps = computed({ get: () => chatState.followUps, set: v => { chatState.followUps = v } })
+// 这些「正在进行中的一轮」的状态都在 ss（per-session SessionRunState）里，
+// 切换 session 时自动指向不同 session 的状态，互不干扰。
+// computed get/set 已在上方定义：querying / thinkingMsg / followUps
 
 const lastAssistantIdx = computed(() => {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'assistant') return i
+  const msgs = messages.value
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role === 'assistant') return i
   }
   return -1
 })
@@ -409,23 +426,14 @@ function extractWikilinks(text: string): Array<{ category: string; name: string 
  * 优先 traces[i]（doSend 流程注册的）；历史回填消息没注册 → 返回空数组。
  */
 function getTools(i: number): string[] {
-  return chatState.traces[i]?.tools || []
+  return ss.value.traces[i]?.tools || []
 }
 
-/**
- * 模板辅助：取第 i 条 assistant 消息的知识子图节点。
- * 优先 traces[i].links；缺失（如历史 session 回填）则即时从 m.content 抽。
- * 即时抽用 KB 节点名兜底匹配 → 历史轮也能看到图谱。
- *
- * 用 _linksCache 把"按下标的即时抽取结果"缓存起来，避免每次模板重渲染都跑一遍正则 + 子串扫描。
- * cache key 用 `${i}::${content.length}::首尾摘要`，content 改变即失效。
- */
 const _linksCache = new Map<string, Array<{ category: string; name: string }>>()
 function getLinks(i: number, content: string): Array<{ category: string; name: string }> {
-  const stored = chatState.traces[i]?.links
+  const stored = ss.value.traces[i]?.links
   if (stored && stored.length) return stored
   if (!content) return []
-  // 缓存：内容指纹 + 当前 space（切 space 时整页 unmount cache 自然清，但保险用 space 名混进 key）
   const key = `${props.space.name}::${i}::${content.length}::${content.slice(0, 24)}::${content.slice(-24)}`
   const hit = _linksCache.get(key)
   if (hit) return hit
@@ -548,22 +556,21 @@ async function openSession(sid: string) {
   if (sid === currentSid.value) return
   if (loadingSession.value) return
   loadingSession.value = true
-  // 切换前先清空，避免显示旧消息
+  // 切换 currentSid：ss 自动切到对应 session 的完整状态（messages/traces/querying 全保留）
   currentSid.value = sid
-  messages.splice(0)
-  currentTitle.value = ''
-  followUps.value = []
-  // 清空逐轮思考过程（旧 session 的 traces 不再适用，会被新消息回填后即时算）
-  chatState.traces = {}
-  chatState.trace = { tools: [], links: [] }
   _linksCache.clear()
+  // 如果该 session 已有 messages（之前加载过/正在跑），直接显示，不重新 fetch
+  if (ss.value.messages.length > 0) {
+    loadingSession.value = false
+    await scrollToBottom()
+    return
+  }
   try {
     const res = await api.chatLoadSession(props.space.name, sid)
-    // 防并发：用户在等待期间又点了别的 session
     if (sid !== currentSid.value) return
     if (res.ok && res.messages) {
-      res.messages.forEach(m => messages.push(m as { role: 'user' | 'assistant'; content: string }))
-      currentTitle.value = res.title || ''
+      res.messages.forEach(m => ss.value.messages.push(m as { role: 'user' | 'assistant'; content: string }))
+      ss.value.currentTitle = res.title || ''
     }
   } finally {
     loadingSession.value = false
@@ -572,12 +579,9 @@ async function openSession(sid: string) {
 }
 
 function newSession() {
+  // 先清空 '' bucket，避免上次新建的遗留消息被显示
+  deleteSessionState(props.space.name, '')
   currentSid.value = ''
-  currentTitle.value = ''
-  messages.splice(0)
-  followUps.value = []
-  chatState.traces = {}
-  chatState.trace = { tools: [], links: [] }
   _linksCache.clear()
 }
 
@@ -608,7 +612,7 @@ function relTime(iso: string): string {
  * 也兼顾了竞态：如果中断信号到达时已经没有 abortCtrl（done 已收到），就静默忽略。
  */
 function abortStream() {
-  const ctrl = chatState.abortCtrl
+  const ctrl = ss.value.abortCtrl
   if (!ctrl) return
   try { ctrl.abort() } catch { /* ignore */ }
 }
@@ -617,52 +621,29 @@ async function doSend() {
   const q = question.value.trim()
   if (!q || querying.value) return
 
-  // 1) 立即把用户消息加进 UI；同时清空旧的 follow-ups（就是当前问题的来源）
-  messages.push({ role: 'user', content: q })
+  const curSs = ss.value // 快照当前 session state，防止 doSend 执行中 currentSid 变化
+  curSs.messages.push({ role: 'user', content: q })
   question.value = ''
-  querying.value = true
-  thinkingMsg.value = t('query.thinkingConnecting')
-  followUps.value = []
+  curSs.querying = true
+  curSs.thinkingMsg = t('query.thinkingConnecting')
+  curSs.followUps = []
   await scrollToBottom()
 
-  // 2) 预先放一个空的助手气泡。它的内容在 done 之前一直为空，
-  //    模板的 loading 分支会显示一个灰色小框作为「思考/正在生成」状态。
-  const assistantIdx = messages.length
-  messages.push({ role: 'assistant', content: '' })
-  // 推完 loading 气泡再滚一次：
-  // 上一次 scrollToBottom 只看见 user 消息（loading 框还没 mount），
-  // 这次确保 user + loading 灰框都在视口里——用户回车后立刻"看见自己的提问 +
-  // 后台正在思考"的连贯反馈，而不是回车后页面纹丝不动。
+  const assistantIdx = curSs.messages.length
+  curSs.messages.push({ role: 'assistant', content: '' })
   await scrollToBottom()
-  // 标记本轮 turn 的 assistant 在 messages 里的下标。
-  // follow-ups 事件迟到时会用它 vs 当前 chatState.activeAsstIdx 比较，
-  // 如果不一致说明已被下一轮覆盖（用户连续发问），就丢弃这次 follow-ups。
-  chatState.activeAsstIdx = assistantIdx
-  // 清空上一轮的思考过程追踪——本轮重新累积
-  chatState.trace = { tools: [], links: [] }
-  // 同时把本轮 trace 注册进 traces[assistantIdx]，让模板按消息下标读到自己那轮的内容。
-  // 引用同一对象 → tools.push 会同步增长，无需额外 sync。
-  chatState.traces[assistantIdx] = chatState.trace
 
-  // ─── 关键设计：不实时渲染 token ───────────────────────────────
-  // LLM token 流如果按 delta 来一字一字 push 进 messages.content + 触发 marked + v-html，
-  // 高速时整屏跳跃式重排，视觉非常晕。改成：
-  //   - 流过程中只把 token 累到本地 answerText，用 chatState.streamingChars 计字数让
-  //     loading 框显示进度（"已生成 N 字"+灰底脉冲），但 messages[idx].content 始终是 ''
-  //   - 收到 done 时一次性把整段 answerText 写进 messages[idx].content，
-  //     marked + 高亮一次性渲染出来，给用户「答案已就绪」的明确分界感
-  //   - 工具调用（tool 事件）也只更新进度文案，不渲染到气泡里
-  // 副作用：用户看不到逐字增长的过程；但首屏稳定、不晕、思考边界清晰，
-  // 这正是用户要的"灰色小框 + 最后一大块直接回复"的体验。
+  curSs.activeAsstIdx = assistantIdx
+  curSs.trace = { tools: [], links: [] }
+  curSs.traces[assistantIdx] = curSs.trace
+
   let answerText = ''
   let charCount = 0
-  // 中断控制：用 AbortController 接 fetch；用户点灰色 loading 框时调用 abort()。
-  // chatState.abortCtrl 存进 store 是为了：跨 mount 切走再切回，仍然能让别的组件触发中断（虽然目前只有当前组件用）。
-  // aborted 标记给 catch/finally 逻辑用：true 时不当作错误显示，而是在已累积文本后追加 (已中断)。
   const abortCtrl = new AbortController()
-  chatState.abortCtrl = abortCtrl
+  curSs.abortCtrl = abortCtrl
+  // 记录本次 send 时的 sid（用于 finally 里判断 session state 清理）
+  const sendSid = chatState.currentSid
   let aborted = false
-  // ──────────────────────────────────────────────────────────────
 
   try {
     const resp = await fetch('/api/chat/stream', {
@@ -718,64 +699,69 @@ async function doSend() {
      * 没收到 `\n\n` 收尾就被丢弃 → 答案"不完整"的根因之一。
      */
     const handleSSEEvent = async (ev: any) => {
+      // 通过 sendSid 找到本次 send 对应的 session state（即使用户已切走，state 仍在）
+      const sState = getSessionState(props.space.name, sendSid)
+      // 本轮事件是否仍是该 session 的活跃 turn（防用户在同一 session 连续发问）
+      const amActive = sState.activeAsstIdx === assistantIdx
+      // 该 session 是否当前正在显示（决定是否更新 UI 文案/滚动）
+      const isCurrentSession = chatState.currentSid === sendSid
+
       if (ev.event === 'start') {
-        if (!currentSid.value && ev.session_id) currentSid.value = ev.session_id
-        // 第一个 token 还没来：进度文案改"正在生成"
-        thinkingMsg.value = t('query.generating')
+        if (amActive) {
+          // start 事件可能携带 session_id（新建会话）：把 '' session 的数据迁移到真实 sid
+          if (!sendSid && ev.session_id) {
+            migrateSessionState(props.space.name, '', ev.session_id)
+            chatState.currentSid = ev.session_id
+          }
+          if (isCurrentSession) thinkingMsg.value = t('query.generating')
+        }
       } else if (ev.event === 'delta') {
-        // 累积但不渲染：只更新进度计数 + 让灰色小框知道有内容在长
         const piece = ev.text || ''
         if (piece) {
           answerText += piece
           charCount += piece.length
-          chatState.streamingChars = charCount
-          thinkingMsg.value = t('query.generatingProgress', { n: charCount })
+          if (amActive) {
+            sState.streamingChars = charCount
+            if (isCurrentSession) thinkingMsg.value = t('query.generatingProgress', { n: charCount })
+          }
         }
       } else if (ev.event === 'tool') {
-        // 工具调用：进 chatState.trace.tools，让 <details> 折叠块和右栏面板都能读
         const note = `${ev.name}(${(ev.args || '').slice(0, 60)})`
-        if (chatState.activeAsstIdx === assistantIdx) {
-          chatState.trace.tools.push(note)
+        if (amActive) {
+          sState.trace.tools.push(note)
+          if (isCurrentSession) thinkingMsg.value = t('query.toolRunning', { name: ev.name || '?' })
         }
-        thinkingMsg.value = t('query.toolRunning', { name: ev.name || '?' })
       } else if (ev.event === 'done') {
-        if (!currentSid.value && ev.session_id) currentSid.value = ev.session_id
-        if (ev.title) currentTitle.value = ev.title
-        // done 兜底：用 done.answer 作权威，写一次完整的进 messages
         if (typeof ev.answer === 'string' && ev.answer.length > answerText.length) {
           answerText = ev.answer
         }
-        // 一次性把累积的整段 answer 渲染到气泡里——给用户「答案已就绪」的清晰分界
-        if (chatState.activeAsstIdx === assistantIdx) {
-          // 注意：不再把工具调用拼到 content 前面——
-          // 推理过程已由 bubble-host 顶部的 <details> 折叠块独立渲染
-          // （数据从 traces[i] 读），保持气泡内容只是纯答案，复制 / 阅读更干净。
-          messages[assistantIdx] = {
-            role: 'assistant',
-            content: answerText,
+        if (amActive) {
+          if (!sendSid && ev.session_id) {
+            migrateSessionState(props.space.name, '', ev.session_id)
+            chatState.currentSid = ev.session_id
           }
-          querying.value = false
-          thinkingMsg.value = ''
-          chatState.streamingChars = 0
-          // 抽答案中的 wikilinks 作为「本轮答案的知识图谱」节点源
-          chatState.trace.links = extractWikilinks(answerText)
-          flashJustFinished()
+          if (ev.title) sState.currentTitle = ev.title
+          sState.messages[assistantIdx] = { role: 'assistant', content: answerText }
+          sState.streamingChars = 0
+          sState.trace.links = extractWikilinks(answerText)
+          if (isCurrentSession) {
+            flashJustFinished()
+            await scrollToAnswerStart(assistantIdx)
+          }
         }
-        // 滚动定位：让用户看到「自己的提问 + 答案的开头」
-        await scrollToAnswerStart(assistantIdx)
+        // 无守卫解锁该 session 的 querying
+        sState.querying = false
+        sState.thinkingMsg = ''
         loadSessions()
       } else if (ev.event === 'follow_ups') {
-        if (Array.isArray(ev.follow_ups) && chatState.activeAsstIdx === assistantIdx) {
-          followUps.value = ev.follow_ups.filter((s: any) => typeof s === 'string' && s.trim())
-          // 注意：这里**不能** scrollToBottom：done 事件刚把视口定到"提问 + 答案开头"，
-          // follow_ups 几秒后异步到达，如果再滚底会把答案开头推出视口（用户看到页面"自己往下滑"）。
-          // follow-ups 在右栏底部，用户读完答案自然下滑就能看到。
+        if (Array.isArray(ev.follow_ups) && amActive) {
+          sState.followUps = ev.follow_ups.filter((s: any) => typeof s === 'string' && s.trim())
         }
       } else if (ev.event === 'error') {
         const errLine = `\n\n> ✦ ${ev.error || t('query.errInference')}`
         answerText += errLine
-        if (chatState.activeAsstIdx === assistantIdx) {
-          messages[assistantIdx] = { role: 'assistant', content: answerText }
+        if (amActive) {
+          sState.messages[assistantIdx] = { role: 'assistant', content: answerText }
         }
       }
     }
@@ -791,64 +777,57 @@ async function doSend() {
       processBuf(false)
     }
   } catch (e: any) {
-    // AbortError = 用户主动点中断。这是预期路径，不当错误展示：
-    // 已累积的 answerText 原样保留 + 末尾追加 (已中断) 标记；空答案则只显示标记。
+    const sState = getSessionState(props.space.name, sendSid)
+    const amActive = sState.activeAsstIdx === assistantIdx
     if (e?.name === 'AbortError' || abortCtrl.signal.aborted) {
       aborted = true
       const note = `\n\n> _${t('query.aborted')}_`
       answerText = (answerText || '') + note
-      if (chatState.activeAsstIdx === assistantIdx) {
-        // 同 done 路径：不再把 tools 拼进 content，由 <details> 折叠块独立渲染
-        messages[assistantIdx] = {
-          role: 'assistant',
-          content: answerText,
-        }
-      }
+      if (amActive) sState.messages[assistantIdx] = { role: 'assistant', content: answerText }
     } else {
-      // 网络/解析错误：把已累积的 answerText（可能为空）+ 错误说明一次写到气泡
       const errLine = `\n\n> ✦ ${t('query.errNetwork', { e: e?.message || e })}`
       answerText = (answerText || '') + errLine
-      if (chatState.activeAsstIdx === assistantIdx) {
-        messages[assistantIdx] = { role: 'assistant', content: answerText }
-      }
+      if (amActive) sState.messages[assistantIdx] = { role: 'assistant', content: answerText }
     }
   } finally {
-    // 释放 abortCtrl 引用：本轮已结束（无论 done/中断/错误），下一轮 doSend 会建新的
-    if (chatState.abortCtrl === abortCtrl) {
-      chatState.abortCtrl = null
-    }
-    // 兜底：done 没收到（流提前断 / 用户中断）时也要 flush + 解锁
+    const sState = getSessionState(props.space.name, sendSid)
+    const amActive = sState.activeAsstIdx === assistantIdx
+    const isCurrentSession = chatState.currentSid === sendSid
+    if (sState.abortCtrl === abortCtrl) sState.abortCtrl = null
+    // 兜底：done 没收到时把累积的 answerText 写入气泡
     let didFallbackFlush = false
-    if (chatState.activeAsstIdx === assistantIdx) {
-      // 如果 messages 还是空字符串说明 done 没来过——把累积的 answerText 写进去（即使没完整）
-      if (messages[assistantIdx] && messages[assistantIdx].content === '' && answerText) {
-        // 同 done 路径：不再把 tools 拼进 content，由 <details> 折叠块独立渲染
-        messages[assistantIdx] = {
-          role: 'assistant',
-          content: answerText,
-        }
-        didFallbackFlush = true
-      }
-      if (querying.value) {
-        querying.value = false
-        thinkingMsg.value = ''
-        chatState.streamingChars = 0
-        loadSessions()
-        didFallbackFlush = true
-      }
+    if (amActive && sState.messages[assistantIdx] && sState.messages[assistantIdx].content === '' && answerText) {
+      sState.messages[assistantIdx] = { role: 'assistant', content: answerText }
+      didFallbackFlush = true
     }
-    // 滚动策略：done 正常路径已经 scrollToAnswerStart 到「提问 + 答案开头」，
-    // finally 不能再 scrollToBottom 把答案开头推出视口。
-    // 仅在异常/中断/done 没收到这种 fallback 路径下，才补一次 scrollToAnswerStart
-    // 让用户至少看到「自己的提问 + 残缺答案的开头 + (已中断)/错误标记」。
-    if (didFallbackFlush) {
+    // 无守卫解锁该 session 的 querying
+    if (sState.querying) {
+      sState.querying = false
+      sState.thinkingMsg = ''
+      sState.streamingChars = 0
+      didFallbackFlush = true
+    }
+    loadSessions()
+    if (didFallbackFlush && isCurrentSession) {
       await scrollToAnswerStart(assistantIdx)
     }
-    void aborted // 只是给 catch 用作语义标记，不在 finally 中读
+    void aborted
   }
 }
 
 onMounted(loadSessions)
+
+// 实时测量 .messages 可视高度写入 CSS 变量 --rightcol-max-h，
+// 供参考面板 max-height 用，保证面板高度不超出展示区。
+let rcResizeObserver: ResizeObserver | null = null
+onMounted(() => {
+  const el = msgContainer.value
+  if (!el) return
+  const update = () => el.style.setProperty('--rightcol-max-h', `${el.clientHeight - 24}px`)
+  update()
+  rcResizeObserver = new ResizeObserver(update)
+  rcResizeObserver.observe(el)
+})
 
 // ============================================================
 // 推荐问题（首屏交互优化）
@@ -870,7 +849,7 @@ const placeholderIdx = ref(0)
 let placeholderTimer: number | null = null
 
 // 进入空对话 → 拉 suggestions；切到非空对话 → 暂停轮播省 CPU
-const isEmpty = computed(() => messages.length === 0 && !currentSid.value)
+const isEmpty = computed(() => messages.value.length === 0 && !currentSid.value)
 
 const dynamicPlaceholder = computed(() => {
   const fallback = t('query.placeholder')
@@ -944,6 +923,7 @@ onUnmounted(() => {
     window.clearTimeout(justFinishedTimer)
     justFinishedTimer = null
   }
+  rcResizeObserver?.disconnect()
 })
 </script>
 
@@ -957,18 +937,33 @@ onUnmounted(() => {
   background: var(--paper);
 }
 
-/* ----- Sessions sidebar (notebook spine) ----------------------- */
+/* ----- Sessions sidebar (notebook spine) — 默认折叠窄条，hover 浮出 ----- */
+.sessions-wrap {
+  position: relative;
+  width: 260px;
+  flex-shrink: 0;
+  transition: width 240ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.sessions-wrap.collapsed { width: 36px; }
 .sessions {
   width: 260px;
+  height: 100%;
   flex-shrink: 0;
   border-right: 1px solid var(--paper-edge);
   background: var(--paper-2);
   display: flex;
   flex-direction: column;
-  transition: width 240ms cubic-bezier(0.2, 0.7, 0.2, 1);
 }
-.sessions.collapsed {
-  width: 36px;
+/* 折叠态：完整面板浮为浮层，hover wrap 时滑入 */
+.sessions-wrap.collapsed .sessions {
+  position: absolute; top: 0; left: 0; bottom: 0; z-index: 400;
+  opacity: 0; pointer-events: none;
+  transform: translateX(-12px);
+  transition: opacity 200ms ease, transform 200ms ease;
+  box-shadow: 4px 0 28px -10px rgba(0,0,0,0.25);
+}
+.sessions-wrap.collapsed:hover .sessions {
+  opacity: 1; pointer-events: auto; transform: translateX(0);
 }
 
 /* 折叠态：极简 spine。
@@ -977,11 +972,13 @@ onUnmounted(() => {
    - 背景与展开态一致 paper-2，与主对话区有一道竖向边界感
    - 不放数字、不放横线条，避免折叠态变得复杂 */
 .sessions-rail {
+  position: absolute; inset: 0; width: 36px;
   display: flex;
   flex-direction: column;
   align-items: center;
   padding: 14px 0;
-  height: 100%;
+  background: var(--paper-2);
+  border-right: 1px solid var(--paper-edge);
 }
 .rail-btn {
   appearance: none;
@@ -1113,6 +1110,7 @@ onUnmounted(() => {
 .s-del:hover { color: var(--vermilion); }
 .session-item.active .s-del { color: rgba(245, 240, 230, 0.5); }
 .session-item.active .s-del:hover { color: var(--vermilion); }
+.session-item-new { font-style: italic; opacity: 0.85; cursor: default; }
 
 /* ----- Right side: conversation ------------------------------- */
 .chat-main {
@@ -1713,43 +1711,49 @@ onUnmounted(() => {
 }
 
 /* =================================================================
- * 右栏 .rightcol — 思考过程 + 跟进推荐共享空间
+ * 右栏 .rightcol-fold — 思考过程 + 跟进推荐共享空间
+ *
+ * 结构分三层，职责严格分离：
+ * - .rightcol-fold：仅负责 grid 位置 + sticky 定位 + 高度上限，自身不做 overflow
+ * - .rightcol-scroll：真正独立滚动的容器（flex:1 + min-height:0 + overflow-y:auto）
+ * - .rightcol：纯内容排布（flex column + gap），不关心定位/滚动
+ * 这样内部滚动完全自洽，不依赖外层 .messages 还剩多少滚动距离。
  *
  * 桌面 (>=980px)：占 assistant-wrap 的第三列，sticky 跟随滚动。
  * 窄屏：退回到第二列下方（跟原 followup-row 的窄屏行为一致）。
- * 内部纵向排：trace-block (tools 时间轴) → trace-block (mini-graph) → followup-row
  * ================================================================= */
-.rightcol {
+.rightcol-fold {
   /* 默认（窄屏）：跳过左 28px "A." 标记列，对齐 bubble */
   grid-column: 2 / 3;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
   margin-top: 14px;
   padding-left: 16px;
 }
+.rightcol {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
 @media (min-width: 980px) {
-  .rightcol {
+  .rightcol-fold {
     grid-column: 3 / 4;
     grid-row: 1 / 2;
     margin-top: 0;
     padding-left: 0;
     align-self: start;
     padding-top: 4px;
-
-    /*
-     * sticky 跟随滚动，但不再做内部 overflow——
-     * 之前 max-height + overflow-y:auto 让滚轮事件被吞，导致用户
-     * 在右栏区滑动时主消息流不动 + 长内容下方的 follow-up 难触达。
-     * 现在让右栏自然撑高：
-     *   - 内容矮（小于视口）：sticky 粘在 top，用户主滚动时它跟着停留
-     *   - 内容高（超过视口）：sticky 失效退化为正常块，主滚动条一路看到底
-     * 这是 ChatGPT/Claude 那种侧栏的成熟做法：宁可放弃严格的"始终可见"，
-     * 也要保住"什么都能滚到"的可触达性。
-     */
+    /* sticky 粘在视口内跟随会话滚动；max-height 限制在展示区内 +
+       overflow-y:auto 内部独立滚动（单层最基础组合，一定能滚）。 */
     position: sticky;
     top: 12px;
+    max-height: var(--rightcol-max-h, 70vh);
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
+}
+.rightcol-scroll {
+  /* 普通内容容器，不做滚动（滚动交给外层 .rightcol-fold）；
+     底部留白，避免最后一行贴着滚动区边缘被切。 */
+  padding-bottom: 12px;
 }
 
 /* trace-block：tools 时间轴 / mini-graph 都用同一外壳（label + 内容） */

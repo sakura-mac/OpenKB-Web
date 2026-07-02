@@ -1,8 +1,19 @@
 <template>
   <div class="chat-wrap">
-    <!-- 会话侧栏（折叠/展开，持久化偏好） -->
-    <aside :class="['sessions', { collapsed: !sessionsOpen }]">
-      <template v-if="sessionsOpen">
+    <!-- 会话侧栏：默认折叠成窄条，hover 浮出完整列表；点展开按钮可钉住 -->
+    <div class="sessions-wrap" :class="{ collapsed: !sessionsOpen }">
+      <!-- 折叠窄条：仅折叠态显示 -->
+      <div v-if="!sessionsOpen" class="sessions-rail">
+        <button class="rail-btn" :title="t('query.expand') + ' (' + sessions.length + ')'" @click="toggleSessions">
+          <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M5 3 L9 7 L5 11" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="rail-divider" aria-hidden="true"></div>
+        <button class="rail-btn" :title="t('query.newSession')" @click="newSession">
+          <svg width="13" height="13" viewBox="0 0 14 14" aria-hidden="true"><path d="M7 3 L7 11 M3 7 L11 7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <!-- 完整面板：展开态常显；折叠态 hover 浮出 -->
+      <aside class="sessions">
         <div class="sessions-head">
           <div>
             <div class="eyebrow">{{ t('query.sessionsEyebrow') }}</div>
@@ -14,6 +25,15 @@
           </div>
         </div>
         <div class="sessions-list">
+          <div
+            v-if="currentSid === ''"
+            :class="['session-item', 'active', 'session-item-new']"
+          >
+            <div class="s-title">
+              <span v-if="querying" class="loading-glyph" style="font-size:10px">···</span>
+              {{ querying ? t('query.thinkingDefault') : t('query.threadNew') }}
+            </div>
+          </div>
           <div
             v-for="s in sessions" :key="s.id"
             :class="['session-item', { active: s.id === currentSid }]"
@@ -31,17 +51,8 @@
             {{ t('query.noSessions') }}
           </div>
         </div>
-      </template>
-      <div v-else class="sessions-rail">
-        <button class="rail-btn" :title="t('query.expand') + ' (' + sessions.length + ')'" @click="toggleSessions">
-          <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M5 3 L9 7 L5 11" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        </button>
-        <div class="rail-divider" aria-hidden="true"></div>
-        <button class="rail-btn" :title="t('query.newSession')" @click="newSession">
-          <svg width="13" height="13" viewBox="0 0 14 14" aria-hidden="true"><path d="M7 3 L7 11 M3 7 L11 7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
-        </button>
-      </div>
-    </aside>
+      </aside>
+    </div>
 
     <main class="chat-main">
       <!-- Hero / toolbar -->
@@ -132,7 +143,11 @@
               >{{ copiedIdx === i ? t('common.copied') : t('common.copy') }}</button>
             </div>
 
-            <!-- 右栏：每轮图谱（持久化）+ 最后一轮 follow-ups -->
+            <!-- 右栏：每轮图谱（持久化）+ 最后一轮 follow-ups
+                 结构分两层：
+                 - .rightcol-fold（details）只负责 sticky 定位 + 高度上限，自身不滚动
+                 - .rightcol-scroll 才是真正独立滚动的内容区（flex:1+min-height:0+overflow-y:auto）
+                 这样内部滚动完全自洽，不依赖外层还剩多少滚动距离。 -->
             <details
               v-if="hasRightCol(i, m)"
               class="rightcol-fold"
@@ -143,28 +158,30 @@
                 <span class="rc-label">{{ t('query.rightPanel') }}</span>
                 <span v-if="getLinks(i).length" class="rc-count">· {{ getLinks(i).length }}</span>
               </summary>
-              <div class="rightcol">
-                <div v-if="getLinks(i).length" class="trace-block">
-                  <div class="trace-label">{{ t('query.traceGraph') }}</div>
-                  <ul class="graph-chips">
-                    <li
-                      v-for="(l, li) in getLinks(i)" :key="li"
-                      :class="['graph-chip', l.category]"
-                      @click="openGraph(l.name)"
-                      :title="t('code.openGraph')"
-                    >
-                      <span class="gc-dot"></span>
-                      <span class="gc-name">{{ l.name }}</span>
-                      <span v-if="l.kind" class="gc-kind">{{ kindLabel(l.kind) }}</span>
-                      <span class="gc-cat">{{ catLabel(l.category) }}</span>
-                    </li>
-                  </ul>
-                </div>
-                <div v-if="i === lastAssistantIdx && m.content && !querying && followUps.length" class="followup-row">
-                  <span class="fu-label">{{ t('query.followUpLabel') }}</span>
-                  <button v-for="(f, fi) in followUps" :key="fi" class="followup-chip" @click="useSuggestion(f)" :title="f">
-                    <span class="fu-text">{{ f }}</span><span class="fu-arrow">→</span>
-                  </button>
+              <div class="rightcol-scroll">
+                <div class="rightcol">
+                  <div v-if="getLinks(i).length" class="trace-block">
+                    <div class="trace-label">{{ t('query.traceGraph') }}</div>
+                    <ul class="graph-chips">
+                      <li
+                        v-for="(l, li) in getLinks(i)" :key="li"
+                        :class="['graph-chip', l.category]"
+                        @click="openGraph(l.name)"
+                        :title="t('code.openGraph')"
+                      >
+                        <span class="gc-dot"></span>
+                        <span class="gc-name">{{ l.name }}</span>
+                        <span v-if="l.kind" class="gc-kind">{{ kindLabel(l.kind) }}</span>
+                        <span class="gc-cat">{{ catLabel(l.category) }}</span>
+                      </li>
+                    </ul>
+                  </div>
+                  <div v-if="i === lastAssistantIdx && m.content && !querying && followUps.length" class="followup-row">
+                    <span class="fu-label">{{ t('query.followUpLabel') }}</span>
+                    <button v-for="(f, fi) in followUps" :key="fi" class="followup-chip" @click="useSuggestion(f)" :title="f">
+                      <span class="fu-text">{{ f }}</span><span class="fu-arrow">→</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             </details>
@@ -207,7 +224,8 @@ import { useI18n } from 'vue-i18n'
 import { api } from '../api'
 import { renderMarkdownWithWikilinks, handleCodeCopyClick } from '../markdown'
 import type { CodeSpaceInfo } from '../types'
-import { useChatState } from '../composables/useChatState'
+import { useChatState, getSessionState, deleteSessionState, migrateSessionState } from '../composables/useChatState'
+import type { SessionState } from '../composables/useChatState'
 import { useUpload } from '../composables/useUpload'
 import CodeGraphPanel from '../components/CodeGraphPanel.vue'
 
@@ -220,8 +238,15 @@ const emit = defineEmits<{ refresh: [] }>()
 
 const chatState = useChatState('code:' + props.space.name)
 const currentSid = computed({ get: () => chatState.currentSid, set: v => { chatState.currentSid = v } })
-const currentTitle = computed({ get: () => chatState.currentTitle, set: v => { chatState.currentTitle = v } })
-const messages = chatState.messages
+
+const ss = computed((): SessionState =>
+  getSessionState('code:' + props.space.name, chatState.currentSid)
+)
+const messages     = computed(() => ss.value.messages)
+const currentTitle = computed({ get: () => ss.value.currentTitle, set: v => { ss.value.currentTitle = v } })
+const querying     = computed({ get: () => ss.value.querying,     set: v => { ss.value.querying = v } })
+const thinkingMsg  = computed({ get: () => ss.value.thinkingMsg,  set: v => { ss.value.thinkingMsg = v } })
+const followUps    = computed({ get: () => ss.value.followUps,    set: v => { ss.value.followUps = v } })
 
 const sessions = ref<SessionMeta[]>([])
 const question = ref('')
@@ -242,17 +267,14 @@ function toggleSessions() {
   localStorage.setItem(SESSIONS_KEY, sessionsOpen.value ? '1' : '0')
 }
 
-const querying = computed({ get: () => chatState.querying, set: v => { chatState.querying = v } })
-const thinkingMsg = computed({ get: () => chatState.thinkingMsg, set: v => { chatState.thinkingMsg = v } })
-const followUps = computed({ get: () => chatState.followUps, set: v => { chatState.followUps = v } })
-
 const lastAssistantIdx = computed(() => {
-  for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === 'assistant') return i
+  const msgs = messages.value
+  for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i].role === 'assistant') return i
   return -1
 })
 
-function getTools(i: number): string[] { return chatState.traces[i]?.tools || [] }
-function getLinks(i: number): Array<{ category: string; name: string; kind?: string }> { return chatState.traces[i]?.links || [] }
+function getTools(i: number): string[] { return ss.value.traces[i]?.tools || [] }
+function getLinks(i: number): Array<{ category: string; name: string; kind?: string }> { return ss.value.traces[i]?.links || [] }
 // 图谱节点类别标签（agent 工具按动作分 5 类）
 function catLabel(c: string): string {
   switch (c) {
@@ -287,7 +309,7 @@ function kindLabel(k: string): string {
 }
 
 // 进行中这一轮的工具调用列表（loading 小框里滚动展示，累积不刷掉）
-const liveTools = computed(() => (querying.value ? chatState.trace.tools : []))
+const liveTools = computed(() => (querying.value ? ss.value.trace.tools : []))
 const liveToolsEl = ref<HTMLElement>()
 watch(() => liveTools.value.length, async () => {
   await nextTick()
@@ -309,12 +331,12 @@ function flashJustFinished() {
 }
 
 function abortStream() {
-  const ctrl = chatState.abortCtrl
+  const ctrl = ss.value.abortCtrl
   if (ctrl) try { ctrl.abort() } catch { /* ignore */ }
 }
 
 async function copyAnswer(i: number) {
-  const m = messages[i]
+  const m = messages.value[i]
   if (!m) return
   try { await navigator.clipboard.writeText(m.content) } catch {
     const ta = document.createElement('textarea')
@@ -360,31 +382,30 @@ async function openSession(sid: string) {
   if (sid === currentSid.value || loadingSession.value) return
   loadingSession.value = true
   currentSid.value = sid
-  messages.splice(0)
-  currentTitle.value = ''
-  followUps.value = []
-  chatState.traces = {}
-  chatState.trace = { tools: [], links: [] }
+  // 如果该 session 已有 messages，直接显示
+  if (ss.value.messages.length > 0) {
+    loadingSession.value = false
+    await scrollToBottom()
+    return
+  }
   try {
     const res = await api.codeLoadSession(props.space.name, sid)
     if (sid !== currentSid.value) return
     if (res.ok && res.messages) {
       const msgs = res.messages
       msgs.forEach((m, idx) => {
-        messages.push({ role: m.role as 'user' | 'assistant', content: m.content })
+        ss.value.messages.push({ role: m.role as 'user' | 'assistant', content: m.content })
         if (m.role === 'assistant') {
-          // 每轮恢复工具时间轴 + 图谱节点（持久化回填）
-          chatState.traces[idx] = { tools: m.tools || [], links: m.graph || [] }
+          ss.value.traces[idx] = { tools: m.tools || [], links: m.graph || [] }
         }
       })
-      // 只有最后一轮的 follow-ups 进追问卡片（与"继续问"语义一致）
       for (let i = msgs.length - 1; i >= 0; i--) {
         if (msgs[i].role === 'assistant') {
-          followUps.value = msgs[i].follow_ups || []
+          ss.value.followUps = msgs[i].follow_ups || []
           break
         }
       }
-      currentTitle.value = res.title || ''
+      ss.value.currentTitle = res.title || ''
     }
   } finally {
     loadingSession.value = false
@@ -393,12 +414,8 @@ async function openSession(sid: string) {
 }
 
 function newSession() {
+  deleteSessionState('code:' + props.space.name, '')
   currentSid.value = ''
-  currentTitle.value = ''
-  messages.splice(0)
-  followUps.value = []
-  chatState.traces = {}
-  chatState.trace = { tools: [], links: [] }
 }
 
 async function deleteSession(sid: string) {
@@ -423,24 +440,26 @@ async function doSend() {
   const q = question.value.trim()
   if (!q || querying.value) return
 
-  messages.push({ role: 'user', content: q })
+  const curSs = ss.value
+  curSs.messages.push({ role: 'user', content: q })
   question.value = ''
-  querying.value = true
-  thinkingMsg.value = t('code.queryingCodeGraph')
-  followUps.value = []
+  curSs.querying = true
+  curSs.thinkingMsg = t('code.queryingCodeGraph')
+  curSs.followUps = []
   await scrollToBottom()
 
-  const assistantIdx = messages.length
-  messages.push({ role: 'assistant', content: '' })
+  const assistantIdx = curSs.messages.length
+  curSs.messages.push({ role: 'assistant', content: '' })
   await scrollToBottom()
-  chatState.activeAsstIdx = assistantIdx
-  chatState.trace = { tools: [], links: [] }
-  chatState.traces[assistantIdx] = chatState.trace
+  curSs.activeAsstIdx = assistantIdx
+  curSs.trace = { tools: [], links: [] }
+  curSs.traces[assistantIdx] = curSs.trace
 
   let answerText = ''
   let charCount = 0
   const abortCtrl = new AbortController()
-  chatState.abortCtrl = abortCtrl
+  curSs.abortCtrl = abortCtrl
+  const sendSid = chatState.currentSid
 
   try {
     const resp = await fetch('/api/code/stream', {
@@ -477,59 +496,58 @@ async function doSend() {
       handleSSEEvent(ev)
     }
     const handleSSEEvent = async (ev: any) => {
+      const sState = getSessionState('code:' + props.space.name, sendSid)
+      const amActive = sState.activeAsstIdx === assistantIdx
+      const isCurrentSession = chatState.currentSid === sendSid
+
       if (ev.event === 'start') {
-        if (!currentSid.value && ev.session_id) currentSid.value = ev.session_id
-        thinkingMsg.value = t('query.generating')
+        if (amActive) {
+          if (!sendSid && ev.session_id) { migrateSessionState('code:' + props.space.name, '', ev.session_id); chatState.currentSid = ev.session_id }
+          if (isCurrentSession) thinkingMsg.value = t('query.generating')
+        }
       } else if (ev.event === 'tool') {
-        answerText = ''; charCount = 0; chatState.streamingChars = 0
+        answerText = ''; charCount = 0; sState.streamingChars = 0
         const note = `${ev.name}(${(ev.args || '').slice(0, 80)})`
-        if (chatState.activeAsstIdx === assistantIdx) chatState.trace.tools.push(note)
-        // 事实校验三态 + 上下文压缩两态：都给可见提示
-        if (ev.name === 'fact_check') {
-          thinkingMsg.value = t('code.factCheckRunning')
-        } else if (ev.name === 'fact_check_passed') {
-          thinkingMsg.value = t('code.factCheckPassed')
-        } else if (ev.name === 'fact_check_failed') {
-          thinkingMsg.value = t('code.factCheckRetry')
-        } else if (ev.name === 'fact_check_source') {
-          thinkingMsg.value = t('code.factCheckSource')
-        } else if (ev.name === 'context_compress') {
-          thinkingMsg.value = t('code.contextCompressing')
-        } else if (ev.name === 'context_compressed') {
-          thinkingMsg.value = t('code.contextCompressed')
-        } else if (ev.name === 'best_of_n') {
-          thinkingMsg.value = ev.args || t('code.bestOfNRunning')
-        } else {
-          thinkingMsg.value = t('query.toolRunning', { name: ev.name || '?' })
+        if (amActive) sState.trace.tools.push(note)
+        if (isCurrentSession) {
+          if (ev.name === 'fact_check') thinkingMsg.value = t('code.factCheckRunning')
+          else if (ev.name === 'fact_check_passed') thinkingMsg.value = t('code.factCheckPassed')
+          else if (ev.name === 'fact_check_failed') thinkingMsg.value = t('code.factCheckRetry')
+          else if (ev.name === 'fact_check_source') thinkingMsg.value = t('code.factCheckSource')
+          else if (ev.name === 'context_compress') thinkingMsg.value = t('code.contextCompressing')
+          else if (ev.name === 'context_compressed') thinkingMsg.value = t('code.contextCompressed')
+          else if (ev.name === 'best_of_n') thinkingMsg.value = ev.args || t('code.bestOfNRunning')
+          else thinkingMsg.value = t('query.toolRunning', { name: ev.name || '?' })
         }
       } else if (ev.event === 'delta') {
         const piece = ev.text || ''
         if (piece) {
           answerText += piece; charCount += piece.length
-          chatState.streamingChars = charCount
-          thinkingMsg.value = t('query.generatingProgress', { n: charCount })
+          sState.streamingChars = charCount
+          if (isCurrentSession) thinkingMsg.value = t('query.generatingProgress', { n: charCount })
         }
       } else if (ev.event === 'done') {
         if (typeof ev.answer === 'string' && ev.answer.trim()) answerText = ev.answer
-        if (!currentSid.value && ev.session_id) currentSid.value = ev.session_id
-        if (ev.title) currentTitle.value = ev.title
-        if (chatState.activeAsstIdx === assistantIdx) {
-          messages[assistantIdx] = { role: 'assistant', content: answerText }
-          if (Array.isArray(ev.graph)) chatState.trace.links = ev.graph
-          querying.value = false
-          thinkingMsg.value = ''
-          chatState.streamingChars = 0
-          flashJustFinished()
+        if (amActive) {
+          if (!sendSid && ev.session_id) { migrateSessionState('code:' + props.space.name, '', ev.session_id); chatState.currentSid = ev.session_id }
+          if (ev.title) sState.currentTitle = ev.title
+          sState.messages[assistantIdx] = { role: 'assistant', content: answerText }
+          if (Array.isArray(ev.graph)) sState.trace.links = ev.graph
+          sState.streamingChars = 0
+          if (isCurrentSession) flashJustFinished()
         }
-        await scrollToAnswerStart(assistantIdx)
+        // 无守卫解锁该 session 的 querying
+        sState.querying = false
+        sState.thinkingMsg = ''
+        if (isCurrentSession) await scrollToAnswerStart(assistantIdx)
         loadSessions()
       } else if (ev.event === 'follow_ups') {
-        if (Array.isArray(ev.follow_ups) && chatState.activeAsstIdx === assistantIdx) {
-          followUps.value = ev.follow_ups.filter((s: any) => typeof s === 'string' && s.trim())
+        if (Array.isArray(ev.follow_ups) && amActive) {
+          sState.followUps = ev.follow_ups.filter((s: any) => typeof s === 'string' && s.trim())
         }
       } else if (ev.event === 'error') {
         answerText += `\n\n> ✦ ${ev.error || t('query.errInference')}`
-        if (chatState.activeAsstIdx === assistantIdx) messages[assistantIdx] = { role: 'assistant', content: answerText }
+        if (amActive) sState.messages[assistantIdx] = { role: 'assistant', content: answerText }
       }
     }
 
@@ -540,23 +558,29 @@ async function doSend() {
       processBuf(false)
     }
   } catch (e: any) {
+    const sState = getSessionState('code:' + props.space.name, sendSid)
+    const amActive = sState.activeAsstIdx === assistantIdx
     if (e?.name === 'AbortError' || abortCtrl.signal.aborted) {
       answerText = (answerText || '') + `\n\n> _${t('query.aborted')}_`
-      if (chatState.activeAsstIdx === assistantIdx) messages[assistantIdx] = { role: 'assistant', content: answerText }
+      if (amActive) sState.messages[assistantIdx] = { role: 'assistant', content: answerText }
     } else {
       answerText = (answerText || '') + `\n\n> ✦ ${t('query.errNetwork', { e: e?.message || e })}`
-      if (chatState.activeAsstIdx === assistantIdx) messages[assistantIdx] = { role: 'assistant', content: answerText }
+      if (amActive) sState.messages[assistantIdx] = { role: 'assistant', content: answerText }
     }
   } finally {
-    if (chatState.abortCtrl === abortCtrl) chatState.abortCtrl = null
+    const sState = getSessionState('code:' + props.space.name, sendSid)
+    const amActive = sState.activeAsstIdx === assistantIdx
+    const isCurrentSession = chatState.currentSid === sendSid
+    if (sState.abortCtrl === abortCtrl) sState.abortCtrl = null
     let didFallback = false
-    if (chatState.activeAsstIdx === assistantIdx) {
-      if (messages[assistantIdx] && messages[assistantIdx].content === '' && answerText) {
-        messages[assistantIdx] = { role: 'assistant', content: answerText }; didFallback = true
-      }
-      if (querying.value) { querying.value = false; thinkingMsg.value = ''; chatState.streamingChars = 0; loadSessions(); didFallback = true }
+    if (amActive && sState.messages[assistantIdx] && sState.messages[assistantIdx].content === '' && answerText) {
+      sState.messages[assistantIdx] = { role: 'assistant', content: answerText }; didFallback = true
     }
-    if (didFallback) await scrollToAnswerStart(assistantIdx)
+    if (sState.querying) {
+      sState.querying = false; sState.thinkingMsg = ''; sState.streamingChars = 0
+      loadSessions(); didFallback = true
+    }
+    if (didFallback && isCurrentSession) await scrollToAnswerStart(assistantIdx)
   }
 }
 
@@ -565,7 +589,7 @@ const suggestions = ref<string[]>([])
 const suggestLoading = ref(false)
 const placeholderIdx = ref(0)
 let placeholderTimer: number | null = null
-const isEmpty = computed(() => messages.length === 0 && !currentSid.value)
+const isEmpty = computed(() => messages.value.length === 0 && !currentSid.value)
 
 const dynamicPlaceholder = computed(() => {
   const fallback = t('code.placeholder')
@@ -623,9 +647,22 @@ watch(isEmpty, (empty) => {
 watch(locale, () => { if (isEmpty.value) loadSuggestions() })
 
 onMounted(loadSessions)
+
+// 实时测量 .messages 可视高度写入 CSS 变量 --rightcol-max-h，
+// 供参考面板 max-height 用，保证面板高度不超出展示区。
+let rcResizeObserver: ResizeObserver | null = null
+onMounted(() => {
+  const el = msgContainer.value
+  if (!el) return
+  const update = () => el.style.setProperty('--rightcol-max-h', `${el.clientHeight - 24}px`)
+  update()
+  rcResizeObserver = new ResizeObserver(update)
+  rcResizeObserver.observe(el)
+})
 onUnmounted(() => {
   stopPlaceholderRotation()
   if (justFinishedTimer) { window.clearTimeout(justFinishedTimer); justFinishedTimer = null }
+  rcResizeObserver?.disconnect()
 })
 </script>
 
@@ -636,14 +673,31 @@ onUnmounted(() => {
   border: 1.5px solid var(--ink); background: var(--paper);
 }
 
-/* sessions sidebar */
-.sessions {
-  width: 260px; flex-shrink: 0; border-right: 1px solid var(--paper-edge);
-  background: var(--paper-2); display: flex; flex-direction: column;
+/* sessions sidebar — 默认折叠窄条，hover 浮出完整列表 */
+.sessions-wrap {
+  position: relative;
+  width: 260px;
+  flex-shrink: 0;
   transition: width 240ms cubic-bezier(0.2, 0.7, 0.2, 1);
 }
-.sessions.collapsed { width: 36px; }
-.sessions-rail { display: flex; flex-direction: column; align-items: center; padding: 14px 0; height: 100%; }
+.sessions-wrap.collapsed { width: 36px; }
+.sessions {
+  width: 260px; height: 100%; flex-shrink: 0;
+  border-right: 1px solid var(--paper-edge);
+  background: var(--paper-2); display: flex; flex-direction: column;
+}
+/* 折叠态：完整面板浮为浮层，hover wrap 时滑入 */
+.sessions-wrap.collapsed .sessions {
+  position: absolute; top: 0; left: 0; bottom: 0; z-index: 400;
+  opacity: 0; pointer-events: none;
+  transform: translateX(-12px);
+  transition: opacity 200ms ease, transform 200ms ease;
+  box-shadow: 4px 0 28px -10px rgba(0,0,0,0.25);
+}
+.sessions-wrap.collapsed:hover .sessions {
+  opacity: 1; pointer-events: auto; transform: translateX(0);
+}
+.sessions-rail { position: absolute; inset: 0; width: 36px; display: flex; flex-direction: column; align-items: center; padding: 14px 0; background: var(--paper-2); border-right: 1px solid var(--paper-edge); }
 .rail-btn {
   appearance: none; background: transparent; border: 0; width: 28px; height: 28px;
   display: inline-flex; align-items: center; justify-content: center;
@@ -801,7 +855,9 @@ onUnmounted(() => {
 .gc-kind { font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-2); flex-shrink: 0; padding: 1px 5px; border: 1px solid var(--paper-edge); background: var(--paper-2); }
 .gc-cat { font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-4); flex-shrink: 0; }
 
-/* 右栏折叠外壳 .rightcol-fold — 默认展开，定位逻辑从 .rightcol 上移 */
+/* 右栏折叠外壳 .rightcol-fold — sticky 粘在视口内跟随会话滚动，
+   自身 max-height 限制在展示区内 + overflow-y:auto 内部独立滚动。
+   单层方案（sticky + max-height + overflow-y:auto 是浏览器最基础支持的组合）。 */
 .rightcol-fold {
   grid-column: 2 / 3;
   margin-top: 14px;
@@ -818,7 +874,17 @@ onUnmounted(() => {
     padding-top: 4px;
     position: sticky;
     top: 12px;
+    /* max-height 用 JS 实测的 .messages 可视高度（--rightcol-max-h），
+       保证面板不超出展示区；回退 70vh 仅用于 JS 未跑起来的瞬间。 */
+    max-height: var(--rightcol-max-h, 70vh);
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
+}
+.rightcol-scroll {
+  /* 普通内容容器，不做滚动（滚动交给外层 .rightcol-fold）；
+     底部留白，避免最后一行贴着滚动区边缘被切。 */
+  padding-bottom: 12px;
 }
 
 /* summary 手柄 */
@@ -830,6 +896,7 @@ onUnmounted(() => {
   gap: 6px;
   padding: 2px 0;
   margin-bottom: 10px;
+  flex-shrink: 0;
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.08em;

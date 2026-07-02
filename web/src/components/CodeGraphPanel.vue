@@ -11,19 +11,29 @@
   单/双击用 240ms 防抖分离，避免双击被 tap 解锁"吃掉"。用 cytoscape（项目已依赖）。
 -->
 <template>
-  <div class="cgp-mask" @click.self="$emit('close')">
+  <Teleport to="body">
+  <div class="cgp-mask">
     <div class="cgp-panel">
       <div class="cgp-head">
         <div>
           <div class="cgp-eyebrow">CODE GRAPH</div>
           <div class="cgp-title">{{ seed }}</div>
         </div>
+        <!-- 面板布局切换 -->
+        <div class="cgp-layout-btns">
+          <button
+            v-for="layout in layouts" :key="layout.id"
+            :class="['layout-btn', { active: panelLayout === layout.id }]"
+            :title="layout.title"
+            @click="panelLayout = layout.id"
+          >{{ layout.icon }}</button>
+        </div>
         <button class="cgp-close" @click="$emit('close')">×</button>
       </div>
 
       <div class="cgp-body">
         <!-- 左：图 -->
-        <div class="cgp-graph">
+        <div class="cgp-graph" v-show="panelLayout !== 'source-only'">
           <div v-if="loading" class="cgp-loading"><span class="loading-glyph">···</span> {{ t('code.graphLoading') }}</div>
           <div ref="cyEl" class="cgp-cy"></div>
 
@@ -66,24 +76,75 @@
         </div>
 
         <!-- 右：选中符号源码 -->
-        <div class="cgp-source">
+        <div class="cgp-source" v-show="panelLayout !== 'graph-only'">
           <div v-if="srcLoading" class="cgp-loading"><span class="loading-glyph">···</span></div>
           <template v-else-if="source && source.found">
+            <!-- 头部：符号名 + 路径 + 搜索 + 大纲开关（单行紧凑） -->
             <div class="cgp-src-head">
-              <div class="cgp-src-name">{{ source.qualified || source.name }}</div>
-              <div class="cgp-src-meta">{{ source.kind }} · {{ source.file }}:{{ source.start_line }}</div>
+              <div class="cgp-src-topbar">
+                <div class="cgp-src-identity">
+                  <span class="cgp-src-kind">{{ source.kind }}</span>
+                  <span class="cgp-src-name">{{ source.name }}</span>
+                  <span class="cgp-src-path">{{ source.file }}:{{ source.start_line }}</span>
+                </div>
+                <div class="cgp-src-actions">
+                  <div class="src-search-wrap" :class="{ expanded: srcSearch }">
+                    <span class="src-search-icon">⌕</span>
+                    <input
+                      v-model="srcSearch"
+                      class="src-search-input"
+                      type="text"
+                      placeholder="搜索…"
+                      @input="onSrcSearch"
+                      @keydown.enter="jumpSrcMatch(1)"
+                      @keydown.shift.enter.prevent="jumpSrcMatch(-1)"
+                    />
+                    <span v-if="srcSearch" class="src-search-count">{{ srcMatchIdx + 1 }}/{{ srcMatchCount }}</span>
+                    <button v-if="srcSearch" class="src-search-nav" @click="jumpSrcMatch(-1)" title="↑">↑</button>
+                    <button v-if="srcSearch" class="src-search-nav" @click="jumpSrcMatch(1)" title="↓">↓</button>
+                    <button v-if="srcSearch" class="src-search-clear" @click="srcSearch=''; onSrcSearch()">×</button>
+                  </div>
+                  <button
+                    class="src-outline-btn"
+                    :class="{ active: showOutline }"
+                    @click="showOutline = !showOutline"
+                    title="大纲"
+                  >≡</button>
+                </div>
+              </div>
             </div>
-            <div class="cgp-src-code md-content" v-html="renderedSource" @click="onSrcClick"></div>
+            <div class="cgp-src-body">
+              <!-- 大纲栏（层级树） -->
+              <div v-if="showOutline && outlineTree.length" class="cgp-outline">
+                <div class="outline-tree">
+              <OutlineNodeView
+                v-for="node in outlineTree"
+                :key="node.line"
+                :node="node"
+                :depth="0"
+                :start-line="source.start_line || 1"
+                :collapsed-set="outlineCollapsed"
+                :highlight-lines="outlineHighlightLines"
+                :active-line="activeOutlineLine"
+                @jump="onOutlineJump"
+                @toggle="onOutlineToggle"
+              />
+                </div>
+              </div>
+              <!-- 代码区 -->
+              <div class="cgp-src-code md-content" ref="srcCodeEl" v-html="renderedSourceWithHL" @click="onSrcClick"></div>
+            </div>
           </template>
           <div v-else class="cgp-src-empty">{{ t('code.clickNode') }}</div>
         </div>
       </div>
     </div>
   </div>
+  </Teleport>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import cytoscape from 'cytoscape'
 import type { Core } from 'cytoscape'
@@ -92,7 +153,22 @@ import { renderMarkdownWithWikilinks, handleCodeCopyClick } from '../markdown'
 
 const { t } = useI18n()
 const props = defineProps<{ space: string; seed: string }>()
-defineEmits<{ close: [] }>()
+const emit = defineEmits<{ close: [] }>()
+
+// ESC 关闭 + 锁定 body 滚动
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') emit('close')
+}
+let prevBodyOverflow = ''
+onMounted(() => {
+  window.addEventListener('keydown', onKeydown)
+  prevBodyOverflow = document.body.style.overflow
+  document.body.style.overflow = 'hidden'
+})
+onUnmounted(() => {
+  window.removeEventListener('keydown', onKeydown)
+  document.body.style.overflow = prevBodyOverflow
+})
 
 const cyEl = ref<HTMLElement>()
 const loading = ref(false)
@@ -103,6 +179,383 @@ const searchQuery = ref('')
 let cy: Core | null = null
 let locked: string | null = null
 const expanded = new Set<string>()
+
+// 大纲 + 代码搜索状态
+const showOutline = ref(true)  // 默认展开
+const srcSearch = ref('')
+const srcMatchIdx = ref(0)
+const srcMatchCount = ref(0)
+const srcCodeEl = ref<HTMLElement>()
+
+// 面板布局：both = 图 + 源码，graph-only = 仅图，source-only = 仅源码
+type PanelLayout = 'both' | 'graph-only' | 'source-only'
+const panelLayout = ref<PanelLayout>('both')
+const layouts: Array<{ id: PanelLayout; icon: string; title: string }> = [
+  { id: 'graph-only',  icon: '⬛',  title: '仅图谱' },
+  { id: 'both',        icon: '◫',   title: '图谱 + 源码' },
+  { id: 'source-only', icon: '▭',   title: '仅源码' },
+]
+
+// 切换到 graph-only 时通知 cytoscape resize，否则图会错位
+watch(panelLayout, async () => {
+  await nextTick()
+  cy?.resize().fit()
+})
+
+// ---- 大纲解析（层级树）----
+interface OutlineNode {
+  line: number      // 在 pureCode 里的行号（1-based）
+  label: string
+  kind: string      // 'class'|'interface'|'struct'|'type'|'function'|'method'|'field'
+  icon: string
+  indent: number    // 源码缩进级别（用于判断父子）
+  children: OutlineNode[]
+  collapsed: boolean
+}
+
+const outlineCollapsed = ref<Set<number>>(new Set())  // 用行号标记已折叠的节点
+
+// source 变化时重置折叠状态（默认全部展开）
+watch(() => source.value, () => {
+  srcSearch.value = ''
+  srcMatchIdx.value = 0
+  srcMatchCount.value = 0
+  activeOutlineLine.value = 0
+  outlineCollapsed.value = new Set()
+})
+
+function getPatterns(ext: string): Array<{ re: RegExp; kind: string; icon: string; group?: number; isContainer?: boolean }> {
+  const P = (re: RegExp, kind: string, icon: string, isContainer = false, group = 1) => ({ re, kind, icon, group, isContainer })
+  if (ext === 'go') return [
+    P(/^type\s+(\w+)\s+(?:struct|interface)/, 'type', '◈', true),
+    P(/^func\s+\(([^)]+)\)\s+(\w+)\s*\(/, 'method', '·ƒ', false, 2),
+    P(/^func\s+(\w+)\s*\(/, 'function', 'ƒ'),
+  ]
+  if (['ts','tsx','js','jsx','mjs'].includes(ext)) return [
+    P(/^\s*(?:export\s+)?(?:abstract\s+)?class\s+(\w+)/, 'class', '◈', true),
+    P(/^\s*(?:export\s+)?interface\s+(\w+)/, 'interface', '◇', true),
+    P(/^\s*(?:export\s+)?(?:async\s+)?function\s+(\w+)/, 'function', 'ƒ'),
+    P(/^\s*(?:export\s+)?const\s+(\w+)\s*=\s*(?:async\s+)?\(/, 'function', 'ƒ'),
+    P(/^\s*(?:(?:public|protected|private|static|override|readonly|abstract|async|get|set)\s+)*(\w+)\s*(?:<[^>]*>)?\s*\(/, 'method', '·ƒ'),
+  ]
+  if (ext === 'php') return [
+    P(/^\s*(?:abstract\s+|final\s+)?(?:readonly\s+)?class\s+(\w+)/, 'class', '◈', true),
+    P(/^\s*interface\s+(\w+)/, 'interface', '◇', true),
+    P(/^\s*(?:(?:public|protected|private|static|abstract|final)\s+)*function\s+(\w+)\s*\(/, 'function', 'ƒ'),
+  ]
+  if (ext === 'py') return [
+    P(/^class\s+(\w+)/, 'class', '◈', true),
+    P(/^\s+(?:async\s+)?def\s+(\w+)\s*\(/, 'method', '·ƒ'),
+    P(/^(?:async\s+)?def\s+(\w+)\s*\(/, 'function', 'ƒ'),
+  ]
+  if (['java','kt'].includes(ext)) return [
+    P(/^\s*(?:(?:public|protected|private|static|abstract|final|sealed)\s+)*(?:class|enum|record)\s+(\w+)/, 'class', '◈', true),
+    P(/^\s*(?:(?:public|protected|private|static|abstract|final|override|suspend)\s+)*(?:fun\s+)?(\w+)\s*\(/, 'method', '·ƒ'),
+  ]
+  if (['c','cpp','cc','h','hpp'].includes(ext)) return [
+    P(/^\s*(?:class|struct|enum)\s+(\w+)/, 'type', '◈', true),
+    P(/^(?:[\w:*&<>\s]+)\s+(\w+)\s*\([^;]*\)\s*\{/, 'function', 'ƒ'),
+  ]
+  if (ext === 'rs') return [
+    P(/^\s*(?:pub\s+)?(?:struct|enum|trait)\s+(\w+)/, 'type', '◈', true),
+    P(/^\s*(?:pub\s+)?impl(?:\s+\w+)?\s+for\s+(\w+)/, 'impl', '⊕', true),
+    P(/^\s*(?:pub\s+)?impl\s+(\w+)/, 'impl', '⊕', true),
+    P(/^\s*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)/, 'function', 'ƒ'),
+  ]
+  return [
+    P(/^\s*(?:async\s+)?function\s+(\w+)/, 'function', 'ƒ'),
+    P(/^\s*class\s+(\w+)/, 'class', '◈', true),
+  ]
+}
+
+const IS_CONTAINER = new Set(['class','interface','type','struct','impl','enum','trait'])
+
+const outlineTree = computed((): OutlineNode[] => {
+  const s = source.value
+  if (!s?.found || !s.code) return []
+  const lines = pureCode(s.code).split('\n')
+  const ext = (s.file || '').split('.').pop()?.toLowerCase() || ''
+  const patterns = getPatterns(ext)
+  const SKIP = new Set(['if','for','while','switch','catch','return','new','delete','else','try','finally','do','case','default','break','continue','throw'])
+
+  // 0. 标记注释行：单行注释（// # --）、块注释（/* ... */）、块注释续行
+  //    注释行不参与符号/调用扫描，避免注释内容被误识别成符号
+  const hashLangs = ['py', 'rb', 'sh', 'bash', 'zsh', 'yaml', 'yml', 'toml']
+  const usesHash = hashLangs.includes(ext)
+  const isComment: boolean[] = new Array(lines.length).fill(false)
+  let inBlock = false
+  lines.forEach((lineText, idx) => {
+    const trimmed = lineText.trim()
+    if (inBlock) {
+      isComment[idx] = true
+      if (trimmed.includes('*/')) inBlock = false
+      return
+    }
+    if (trimmed === '') return
+    // 行内注释符
+    if (trimmed.startsWith('//') || trimmed.startsWith('*')) { isComment[idx] = true; return }
+    if (usesHash && trimmed.startsWith('#')) { isComment[idx] = true; return }
+    // 块注释起始
+    if (trimmed.startsWith('/*')) {
+      isComment[idx] = true
+      if (!trimmed.includes('*/')) inBlock = true
+      return
+    }
+  })
+
+  // 1. 扫出所有符号，记录行号+缩进
+  interface Raw { line: number; label: string; kind: string; icon: string; indent: number }
+  const raw: Raw[] = []
+  lines.forEach((lineText, idx) => {
+    if (isComment[idx]) return
+    const indent = lineText.search(/\S/)
+    for (const p of patterns) {
+      const m = lineText.match(p.re)
+      const g = p.group ?? 1
+      if (m && m[g] && !SKIP.has(m[g])) {
+        raw.push({ line: idx + 1, label: m[g], kind: p.kind, icon: p.icon, indent: indent < 0 ? 0 : indent })
+        break
+      }
+    }
+  })
+
+  // 2. 构建层级树：用栈维护当前容器链
+  const roots: OutlineNode[] = []
+  const stack: OutlineNode[] = []  // 栈顶=最深的容器
+
+  for (const item of raw) {
+    const node: OutlineNode = { ...item, children: [], collapsed: false }
+
+    // 找到第一个 indent 比自己小的容器作为父节点
+    while (stack.length > 0) {
+      const top = stack[stack.length - 1]
+      if (IS_CONTAINER.has(top.kind) && top.indent < node.indent) break
+      stack.pop()
+    }
+
+    if (stack.length > 0 && IS_CONTAINER.has(stack[stack.length - 1].kind)) {
+      stack[stack.length - 1].children.push(node)
+    } else {
+      roots.push(node)
+    }
+
+    if (IS_CONTAINER.has(node.kind)) stack.push(node)
+  }
+
+  // 3. 对函数/方法节点，扫其函数体内的调用行（一层），作为子节点
+  // 调用检测：匹配 `identifier(` 且不是定义行、不是常见关键字
+  const CALL_SKIP = new Set([
+    'if','for','while','switch','catch','return','new','delete','else','try',
+    'finally','do','case','default','break','continue','throw','print','echo',
+    'isset','empty','unset','list','array','require','include','die','exit',
+  ])
+  // 按语言调整调用检测正则
+  const isPhpLike = ['php'].includes(ext)
+  const callRe = isPhpLike
+    ? /(?:\$this->|self::|\$\w+->|static::)?(\w+)\s*\(/g
+    : /(?:this\.|\w+\.)?(\w+)\s*\(/g
+
+  // 找到函数节点在 raw 里对应的下一个同级节点行，确定函数体范围
+  const allNodes: OutlineNode[] = []
+  function collectAll(nodes: OutlineNode[]) {
+    for (const n of nodes) { allNodes.push(n); collectAll(n.children) }
+  }
+  collectAll(roots)
+
+  function addCallChildren(fnNode: OutlineNode) {
+    if (fnNode.children.length > 0) {
+      // 已有子节点（类里的方法），递归处理这些方法
+      for (const child of fnNode.children) addCallChildren(child)
+      return
+    }
+    if (!['function','method'].includes(fnNode.kind)) return
+
+    // 找函数体范围：从 fnNode.line 到下一个同缩进节点的行（或末尾）
+    const myIdx = allNodes.indexOf(fnNode)
+    let bodyEnd = lines.length
+    for (let i = myIdx + 1; i < allNodes.length; i++) {
+      if (allNodes[i].indent <= fnNode.indent) {
+        bodyEnd = allNodes[i].line - 1
+        break
+      }
+    }
+
+    const seen = new Set<string>()
+    const calls: OutlineNode[] = []
+
+    for (let i = fnNode.line; i < bodyEnd; i++) {
+      if (isComment[i]) continue
+      // 剥掉行尾注释，避免注释里的 xxx() 被当成调用
+      let lineText = lines[i]
+      const lc = lineText.indexOf('//')
+      if (lc >= 0) lineText = lineText.slice(0, lc)
+      if (usesHash) {
+        const hc = lineText.indexOf('#')
+        if (hc >= 0) lineText = lineText.slice(0, hc)
+      }
+      callRe.lastIndex = 0
+      let m: RegExpExecArray | null
+      while ((m = callRe.exec(lineText)) !== null) {
+        const name = m[1]
+        if (!name || CALL_SKIP.has(name) || seen.has(name)) continue
+        // 跳过全大写常量、数字开头等
+        if (/^[A-Z_]+$/.test(name) || /^\d/.test(name)) continue
+        seen.add(name)
+        calls.push({
+          line: i + 1,  // 调用所在行（相对 pureCode）
+          label: name,
+          kind: 'call',
+          icon: '→',
+          indent: fnNode.indent + 2,
+          children: [],
+          collapsed: true,
+        })
+      }
+    }
+
+    if (calls.length > 0) {
+      fnNode.children = calls
+      fnNode.collapsed = true  // 默认折叠，避免撑开大纲
+    }
+  }
+
+  for (const root of roots) addCallChildren(root)
+
+  return roots
+})
+
+function toggleOutlineNode(node: OutlineNode) {
+  node.collapsed = !node.collapsed
+}
+
+// 大纲展开时高亮代码里对应的行集合（call 子节点的行号）
+const outlineHighlightLines = ref<Set<number>>(new Set())  // 保留供 prop 传递
+const activeOutlineLine = ref<number>(0)  // 当前选中的大纲行
+
+function onOutlineToggle(node: OutlineNode) {
+  const s = outlineCollapsed.value
+  if (s.has(node.line)) s.delete(node.line)
+  else s.add(node.line)
+  outlineCollapsed.value = new Set(s)
+}
+
+function onOutlineJump(line: number, label?: string) {
+  activeOutlineLine.value = line
+  jumpToLine(line)
+}
+
+// outlineHighlightNames 废弃（改用 srcSearch 复用搜索高亮），保留空 ref 不影响 prop
+const outlineHighlightNames = ref<Set<string>>(new Set())
+
+// ---- 代码搜索 ----
+// 把 renderedSource 里匹配的文本 wrap 成 <mark class="src-hl"> 并滚动定位
+const renderedSourceWithHL = computed(() => {
+  let base = renderedSource.value
+  const jl = jumpHighlightLine.value
+
+  // 跳转行高亮：给目标行包一个 span.jump-hl
+  if (jl > 0) {
+    base = base.replace(/<code[^>]*>([\s\S]*?)<\/code>/g, (match, inner) => {
+      // 按 \n 拆行，给第 jl 行加 wrap
+      const lines = inner.split('\n')
+      if (jl - 1 < lines.length) {
+        lines[jl - 1] = `<span class="jump-hl">${lines[jl - 1]}</span>`
+      }
+      return match.replace(inner, lines.join('\n'))
+    })
+  }
+
+  // 搜索高亮
+  if (!srcSearch.value.trim()) return base
+  const q = srcSearch.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return base.replace(/<code[^>]*>([\s\S]*?)<\/code>/g, (match, inner) => {
+    const highlighted = inner.replace(
+      new RegExp(`(${q})`, 'gi'),
+      '<mark class="src-hl">$1</mark>'
+    )
+    return match.replace(inner, highlighted)
+  })
+})
+
+function onSrcSearch() {
+  srcMatchIdx.value = 0
+  nextTick(() => {
+    const el = srcCodeEl.value
+    if (!el) return
+    const marks = el.querySelectorAll<HTMLElement>('.src-hl')
+    srcMatchCount.value = marks.length
+    if (marks.length > 0) {
+      marks.forEach((m, i) => m.classList.toggle('src-hl-active', i === 0))
+      marks[0].scrollIntoView({ block: 'nearest' })
+    }
+  })
+}
+
+function jumpSrcMatch(dir: 1 | -1) {
+  const el = srcCodeEl.value
+  if (!el) return
+  const marks = el.querySelectorAll<HTMLElement>('.src-hl')
+  if (!marks.length) return
+  marks[srcMatchIdx.value]?.classList.remove('src-hl-active')
+  srcMatchIdx.value = (srcMatchIdx.value + dir + marks.length) % marks.length
+  marks[srcMatchIdx.value]?.classList.add('src-hl-active')
+  marks[srcMatchIdx.value]?.scrollIntoView({ block: 'nearest' })
+}
+
+// ---- 大纲跳转 ----
+// 当前高亮行号（用于行高亮动画）
+const jumpHighlightLine = ref<number>(0)
+let jumpHLTimer: ReturnType<typeof setTimeout> | null = null
+
+function jumpToLine(lineNum: number) {
+  // 触发行高亮动画
+  if (jumpHLTimer) clearTimeout(jumpHLTimer)
+  jumpHighlightLine.value = lineNum
+  jumpHLTimer = setTimeout(() => { jumpHighlightLine.value = 0 }, 2200)
+
+  nextTick(() => {
+    const el = srcCodeEl.value
+    if (!el) return
+    const pre = el.querySelector('pre')
+    const code = el.querySelector('code')
+    if (!code) return
+    // highlight.js 渲染后每行是一个 <span class="hljs-ln-n"> 或直接在 <code> 里换行
+    const lineEls = code.querySelectorAll('.hljs-ln-n, [data-line-number]')
+    if (lineEls.length >= lineNum) {
+      lineEls[lineNum - 1].scrollIntoView({ behavior: 'smooth', block: 'center' })
+      return
+    }
+    // 通用方案：TreeWalker 数换行定位
+    const walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT)
+    let currentLine = 1
+    let node: Text | null
+    while ((node = walker.nextNode() as Text)) {
+      const text = node.textContent || ''
+      const newlines = text.split('\n').length - 1
+      if (currentLine + newlines >= lineNum) {
+        const lineOffset = lineNum - currentLine
+        const charPos = text.split('\n').slice(0, lineOffset).join('\n').length
+        try {
+          const range = document.createRange()
+          range.setStart(node, Math.min(charPos, text.length))
+          range.collapse(true)
+          const dummy = document.createElement('span')
+          dummy.style.cssText = 'position:absolute;pointer-events:none;'
+          range.insertNode(dummy)
+          dummy.scrollIntoView({ behavior: 'smooth', block: 'center' })
+          dummy.remove()
+        } catch { /* ignore */ }
+        return
+      }
+      currentLine += newlines
+    }
+    // 兜底：按比例滚动
+    if (pre) {
+      const totalLines = (code.textContent || '').split('\n').length
+      pre.scrollTop = (lineNum / totalLines) * pre.scrollHeight
+    }
+  })
+}
 
 // 节点 kind → 大类（filter 维度）。kind 太碎，归三类。
 function kindGroup(kind?: string): string {
@@ -426,22 +879,111 @@ onMounted(async () => {
 })
 
 onUnmounted(() => { if (cy) { cy.destroy(); cy = null } })
+
+// ---- 大纲树节点递归组件 ----
+// 用 defineComponent 内联，避免新建文件
+import { defineComponent, h } from 'vue'
+const OutlineNodeView: any = defineComponent({
+  name: 'OutlineNodeView',
+  props: {
+    node: { type: Object as () => OutlineNode, required: true },
+    depth: { type: Number, default: 0 },
+    startLine: { type: Number, default: 1 },
+    collapsedSet: { type: Object as () => Set<number>, required: true },
+    highlightLines: { type: Object as () => Set<number>, default: () => new Set() },
+    activeLine: { type: Number, default: 0 },
+  },
+  emits: ['jump', 'toggle'],
+  setup(props, { emit }) {
+    return () => {
+      const n = props.node
+      const hasChildren = n.children.length > 0
+      const isCollapsed = props.collapsedSet.has(n.line)
+      const realLine = n.line + props.startLine - 1
+      const isActive = props.activeLine === n.line
+
+      // 图标映射：用短字母徽章替代纯文字符号
+      const iconMap: Record<string, { letter: string; cls: string }> = {
+        'class': { letter: 'C', cls: 'ol-badge-class' },
+        'interface': { letter: 'I', cls: 'ol-badge-interface' },
+        'type': { letter: 'T', cls: 'ol-badge-type' },
+        'struct': { letter: 'S', cls: 'ol-badge-type' },
+        'impl': { letter: 'I', cls: 'ol-badge-type' },
+        'enum': { letter: 'E', cls: 'ol-badge-type' },
+        'function': { letter: 'ƒ', cls: 'ol-badge-fn' },
+        'method': { letter: 'm', cls: 'ol-badge-method' },
+        'call': { letter: '→', cls: 'ol-badge-call' },
+      }
+      const badge = iconMap[n.kind] || { letter: '·', cls: 'ol-badge-other' }
+
+      // 子节点递归（仅展开时渲染）
+      const childNodes = hasChildren && !isCollapsed
+        ? n.children.map((child: OutlineNode) =>
+            h(OutlineNodeView, {
+              key: child.line,
+              node: child,
+              depth: props.depth + 1,
+              startLine: props.startLine,
+              collapsedSet: props.collapsedSet,
+              highlightLines: props.highlightLines,
+              activeLine: props.activeLine,
+              onJump: (line: number, label: string) => emit('jump', line, label),
+              onToggle: (node: OutlineNode) => emit('toggle', node),
+            })
+          )
+        : []
+
+      const indent = props.depth * 16
+
+      const row = h('div', {
+        class: ['outline-item', `ol-${n.kind}`, isActive ? 'ol-active' : ''],
+        style: { paddingLeft: `${4 + indent}px` },
+        onClick: (e: Event) => {
+          e.stopPropagation()
+          emit('jump', n.line, n.label)
+        },
+      }, [
+        // 缩进参考线（depth > 0 时显示）
+        ...(props.depth > 0
+          ? [h('span', { class: 'ol-guide', style: { left: `${4 + (props.depth - 1) * 16 + 8}px` } })]
+          : []),
+        // 折叠箭头
+        hasChildren
+          ? h('span', {
+              class: ['ol-arrow', isCollapsed ? 'ol-arrow-closed' : ''],
+              onClick: (e: Event) => { e.stopPropagation(); emit('toggle', n) },
+            }, isCollapsed ? '›' : '⌄')
+          : h('span', { class: 'ol-arrow-placeholder' }),
+        // 类型徽章
+        h('span', { class: ['ol-badge', badge.cls] }, badge.letter),
+        // 标签名
+        h('span', { class: 'ol-label' }, n.label),
+        // 行号（右对齐）
+        h('span', { class: 'ol-line' }, String(realLine)),
+      ])
+
+      return h('div', { class: 'outline-node' }, [row, ...childNodes])
+    }
+  },
+})
 </script>
 
 <style scoped>
 .cgp-mask {
   position: fixed; inset: 0; z-index: 200;
-  background: rgba(20, 18, 15, 0.55);
-  display: flex; align-items: center; justify-content: center;
-  padding: 4vh 4vw;
+  background: rgba(20, 18, 15, 0.45);
+  display: flex;
 }
 .cgp-panel {
-  width: 100%; max-width: 1100px; height: 88vh;
-  background: var(--paper); border: 1.5px solid var(--ink);
-  box-shadow: 10px 10px 0 rgba(0,0,0,0.18);
+  width: 100%; height: 100%;
+  background: var(--paper);
   display: flex; flex-direction: column;
 }
-.cgp-head { display: flex; justify-content: space-between; align-items: center; padding: 14px 20px; border-bottom: 1.5px solid var(--ink); background: #171411; color: #f5efe5; }
+.cgp-head { display: flex; justify-content: space-between; align-items: center; padding: 14px 20px; border-bottom: 1.5px solid var(--ink); background: #171411; color: #f5efe5; gap: 12px; }
+.cgp-layout-btns { display: flex; gap: 2px; margin-left: auto; }
+.layout-btn { appearance: none; background: transparent; border: 1px solid rgba(245,240,230,0.2); color: rgba(245,240,230,0.5); cursor: pointer; width: 28px; height: 28px; font-size: 14px; display: flex; align-items: center; justify-content: center; transition: color 120ms, border-color 120ms, background 120ms; line-height: 1; }
+.layout-btn:hover { color: #f5efe5; border-color: rgba(245,240,230,0.6); }
+.layout-btn.active { color: #f5efe5; border-color: #f5efe5; background: rgba(245,240,230,0.1); }
 .cgp-eyebrow { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.14em; color: #bfb4a5; }
 .cgp-title { font-family: var(--font-display); font-style: italic; font-size: 20px; margin-top: 2px; }
 .cgp-close { appearance: none; background: none; border: 0; color: #f5efe5; font-size: 24px; cursor: pointer; line-height: 1; }
@@ -490,11 +1032,119 @@ onUnmounted(() => { if (cy) { cy.destroy(); cy = null } })
 .lg-callee { background: #3a7a8c; }
 .cgp-tip { color: var(--ink-4); }
 .cgp-source { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--paper-2); }
-.cgp-src-head { padding: 12px 16px; border-bottom: 1px solid var(--paper-edge); }
-.cgp-src-name { font-family: var(--font-mono); font-size: 13px; color: var(--ink); font-weight: 600; word-break: break-all; }
-.cgp-src-meta { font-family: var(--font-mono); font-size: 10px; color: var(--ink-4); margin-top: 3px; word-break: break-all; }
-.cgp-src-code { flex: 1; overflow: auto; margin: 0; padding: 14px 16px; }
-.cgp-src-code :deep(.code-block) { margin: 0; }
-.cgp-src-code :deep(pre) { margin: 0; }
-.cgp-src-empty { margin: auto; color: var(--ink-4); font-family: var(--font-mono); font-size: 12px; }
+
+/* 头部：单行紧凑 */
+.cgp-src-head { padding: 0; border-bottom: 1px solid var(--paper-edge); flex-shrink: 0; background: var(--paper); }
+.cgp-src-topbar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; min-height: 0; }
+.cgp-src-identity { display: flex; align-items: baseline; gap: 6px; flex: 1; min-width: 0; overflow: hidden; }
+.cgp-src-kind { font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-4); flex-shrink: 0; background: var(--paper-2); padding: 1px 5px; }
+.cgp-src-name { font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: var(--ink); flex-shrink: 0; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cgp-src-path { font-family: var(--font-mono); font-size: 9px; color: var(--ink-4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.cgp-src-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+
+/* 搜索框：始终展开 */
+.src-search-wrap { display: flex; align-items: center; gap: 2px; border: 1px solid var(--paper-edge); background: var(--paper-2); padding: 2px 6px; border-radius: 2px; flex: 1; }
+.src-search-icon { color: var(--ink-4); font-size: 13px; cursor: text; flex-shrink: 0; }
+.src-search-input { flex: 1; border: none; background: transparent; outline: none; font-family: var(--font-mono); font-size: 11px; color: var(--ink); padding: 2px 0; min-width: 60px; }
+.src-search-input::placeholder { color: var(--ink-4); font-style: italic; }
+.src-search-count { font-family: var(--font-mono); font-size: 9px; color: var(--ink-4); white-space: nowrap; flex-shrink: 0; }
+.src-search-nav { appearance: none; border: none; background: transparent; color: var(--ink-4); cursor: pointer; font-size: 11px; padding: 1px 3px; line-height: 1; }
+.src-search-nav:hover { color: var(--ink); }
+.src-search-clear { appearance: none; border: none; background: transparent; color: var(--ink-4); cursor: pointer; font-size: 12px; padding: 1px 3px; line-height: 1; }
+.src-search-clear:hover { color: var(--vermilion); }
+.src-outline-btn { appearance: none; border: 1px solid transparent; background: transparent; color: var(--ink-4); cursor: pointer; font-size: 14px; padding: 2px 6px; line-height: 1; border-radius: 2px; transition: color 120ms, border-color 120ms, background 120ms; }
+.src-outline-btn:hover { color: var(--ink); border-color: var(--paper-edge); }
+.src-outline-btn.active { color: var(--ink); border-color: var(--ink); background: rgba(26,24,20,0.06); }
+
+/* 搜索高亮（大纲点击也复用） */
+.cgp-src-code :deep(.src-hl) { background: rgba(200,180,60,0.35); border-radius: 2px; }
+.cgp-src-code :deep(.src-hl-active) { background: rgba(200,100,40,0.45); outline: 1px solid var(--vermilion); }
+
+/* 源码主体：大纲 + 代码横排 */
+.cgp-src-body { flex: 1; display: flex; min-height: 0; overflow: hidden; }
+
+/* 大纲栏 */
+.cgp-outline { width: 240px; min-width: 180px; flex-shrink: 0; border-right: 1px solid var(--paper-edge); overflow: hidden; background: var(--paper); display: flex; flex-direction: column; }
+.cgp-outline :deep(.outline-tree) { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 2px 0; }
+.cgp-outline :deep(.outline-node) { position: relative; }
+.cgp-outline :deep(.outline-item) {
+  position: relative; display: flex; align-items: center; gap: 4px;
+  padding: 1px 8px 1px 0; cursor: pointer;
+  font-family: var(--font-mono); font-size: 12px; color: var(--ink-2);
+  white-space: nowrap; overflow: hidden;
+  transition: background 80ms; line-height: 22px; height: 24px;
+}
+.cgp-outline :deep(.outline-item:hover) { background: rgba(26,24,20,0.05); }
+.cgp-outline :deep(.outline-item.ol-active) { background: rgba(45,74,107,0.12); color: var(--ink); }
+.cgp-outline :deep(.outline-item.ol-active .ol-line) { color: var(--ink-3); }
+
+/* 缩进参考线 */
+.cgp-outline :deep(.ol-guide) { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--paper-edge); pointer-events: none; }
+
+/* 折叠箭头 */
+.cgp-outline :deep(.ol-arrow) {
+  flex-shrink: 0; width: 18px; height: 18px;
+  color: var(--ink-3); cursor: pointer; font-size: 11px;
+  transition: transform 120ms, color 80ms, background 80ms;
+  user-select: none; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 3px;
+}
+.cgp-outline :deep(.ol-arrow:hover) { color: var(--ink); background: rgba(26,24,20,0.08); }
+.cgp-outline :deep(.ol-arrow-closed) { /* 箭头字符已用 › vs ⌄ 区分 */ }
+.cgp-outline :deep(.ol-arrow-placeholder) { flex-shrink: 0; width: 18px; }
+
+/* 类型徽章（小圆角方块 + 字母） */
+.cgp-outline :deep(.ol-badge) {
+  flex-shrink: 0; width: 16px; height: 16px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 10px; font-weight: 700; line-height: 1;
+  border-radius: 3px; color: #fff;
+}
+.cgp-outline :deep(.ol-badge-class)     { background: #3b7dd8; }
+.cgp-outline :deep(.ol-badge-interface) { background: #6b9fd8; }
+.cgp-outline :deep(.ol-badge-type)      { background: #4a8c5a; }
+.cgp-outline :deep(.ol-badge-fn)        { background: #c07820; }
+.cgp-outline :deep(.ol-badge-method)    { background: #9060b0; }
+.cgp-outline :deep(.ol-badge-call)      { background: transparent; color: var(--ink-4); font-weight: 400; font-size: 11px; }
+.cgp-outline :deep(.ol-badge-other)     { background: var(--ink-4); }
+
+/* 标签名 */
+.cgp-outline :deep(.ol-label) {
+  flex: 1; overflow: hidden; text-overflow: ellipsis;
+  color: inherit; padding: 0 2px;
+}
+
+/* 行号：右对齐、低调 */
+.cgp-outline :deep(.ol-line) {
+  margin-left: auto; flex-shrink: 0;
+  font-size: 10px; color: var(--ink-4); padding-right: 2px;
+  font-variant-numeric: tabular-nums;
+  min-width: 32px; text-align: right;
+}
+
+/* call 子项样式：稍微降调 */
+.cgp-outline :deep(.ol-call) { opacity: 0.75; }
+.cgp-outline :deep(.ol-call .ol-label) { font-size: 11px; }
+.cgp-outline :deep(.ol-call:hover) { opacity: 1; }
+
+/* 跳转行高亮闪烁 */
+.cgp-src-code :deep(.jump-hl) {
+  display: inline;
+  background: rgba(200, 160, 50, 0.28);
+  box-shadow: -4px 0 0 rgba(200, 160, 50, 0.28), 4px 0 0 rgba(200, 160, 50, 0.28);
+  animation: jump-flash 2.2s ease-out forwards;
+}
+@keyframes jump-flash {
+  0%   { background: rgba(200, 140, 40, 0.45); box-shadow: -4px 0 0 rgba(200,140,40,0.45), 4px 0 0 rgba(200,140,40,0.45); }
+  30%  { background: rgba(200, 160, 50, 0.28); box-shadow: -4px 0 0 rgba(200,160,50,0.28), 4px 0 0 rgba(200,160,50,0.28); }
+  100% { background: transparent; box-shadow: none; }
+}
+
+.cgp-src-code { flex: 1; overflow: auto; margin: 0; padding: 0; min-width: 0; max-width: none !important; box-sizing: border-box; display: flex; flex-direction: column; }
+.cgp-src-code :deep(.code-block) { margin: 0 !important; flex: 1; display: flex !important; flex-direction: column; box-sizing: border-box; width: 100%; }
+.cgp-src-code :deep(.code-block-head) { display: none !important; }
+.cgp-src-code :deep(.code-header) { display: none !important; }
+.cgp-src-code :deep(pre) { margin: 0 !important; flex: 1; box-sizing: border-box; overflow-x: auto; padding: 12px 16px !important; width: 100%; }
+.cgp-src-code :deep(code) { white-space: pre; word-break: normal; display: block; }
+.cgp-src-empty { display: flex; align-items: center; justify-content: center; flex: 1; color: var(--ink-4); font-family: var(--font-mono); font-size: 11px; font-style: italic; }
 </style>
