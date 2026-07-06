@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -110,6 +111,10 @@ func codeAgentTools() []map[string]any {
 			"分析修改某符号会影响到哪些代码（影响面分析），返回受影响的符号列表。",
 			map[string]any{"symbol": strParam("符号名")},
 			[]string{"symbol"}),
+		fn("git_diff",
+			"获取代码库中尚未提交的改动（git diff），即用户刚写的新代码。用于代码审查（review）场景：先用它看到改了什么，再结合 read_source / search_symbol 分析上下文，找出潜在问题（bug、风格、遗漏的边界处理、影响面等）。会包含已 add 和未 add 的改动，以及新增的未跟踪文件列表。",
+			map[string]any{"path": strParam("可选，限定审查范围的文件或目录相对路径；留空则审查整个仓库的所有改动")},
+			[]string{}),
 	}
 }
 
@@ -119,7 +124,8 @@ const codeAgentSystemPrompt = `你是资深代码分析助手，可以调用工�
 1. 先用 search_symbol 定位用户问到的符号，拿到文件路径和行号
 2. 用 read_source 读取真实源码实现——不要只凭符号元数据（位置、调用热度）就下结论
 3. 需要理解调用关系时用 find_callers / find_callees / analyze_impact
-4. 信息足够后，用中文给出准确、有据可查的回答
+4. 如果用户是要审查/审阅刚写的新代码（review、检查改动、看看有没有问题等），先用 git_diff 看未提交的改动，再针对改动到的符号用 read_source / find_callers 补全上下文后给出审查意见
+5. 信息足够后，用中文给出准确、有据可查的回答
 
 规则：
 - 必须基于真实读到的源码回答，引用时标注文件名和行号
@@ -439,6 +445,12 @@ func collectGraphNode(name, argsJSON, resultJSON string, add func(category, name
 		if p != "" {
 			add("file", filepath.Base(p), "")
 		}
+	case "git_diff":
+		p := str("path")
+		if p == "" {
+			p = "全部改动"
+		}
+		add("diff", p, "")
 	}
 }
 
@@ -1097,6 +1109,8 @@ func executeCodeTool(ctx context.Context, workDir, name, argsJSON string) string
 		return cgResult(ok, out, errOut)
 	case "read_source":
 		return readSource(workDir, getStr("path"), getInt("start_line"), getInt("end_line"))
+	case "git_diff":
+		return gitDiff(ctx, workDir, getStr("path"))
 	default:
 		return "错误：未知工具 " + name
 	}
@@ -1181,4 +1195,92 @@ func readLimited(r interface{ Read([]byte) (int, error) }, n int64) ([]byte, err
 		}
 	}
 	return buf[:total], nil
+}
+
+// ============================================================
+// Git 工具 —— 让 agent 能看到用户「刚写的新代码」（未提交改动），
+// 是代码审查（review）场景的入口：先 git_diff 看改了什么，
+// 再用 read_source / find_callers 补全上下文分析问题。
+// ============================================================
+
+// runGit 在 workDir 下执行一条 git 命令，返回合并输出（stdout+stderr）。
+func runGit(ctx context.Context, workDir string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = workDir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(out), fmt.Errorf("%s", strings.TrimSpace(string(out)))
+	}
+	return string(out), nil
+}
+
+// gitDiff 返回 workDir 内未提交的改动，覆盖三种情况：
+//   - 仓库已有提交：git diff HEAD（一次性覆盖已 add + 未 add 的改动）
+//   - 全新仓库尚无提交：分别取 git diff --cached（已 add）+ git diff（未 add）
+//   - 新增未跟踪文件：diff 命令本身不体现，需从 git status --porcelain 里补充列出
+//
+// path 非空时限定审查范围（git pathspec），做与 readSource 一致的路径越界防护。
+func gitDiff(ctx context.Context, workDir, path string) string {
+	if _, err := os.Stat(filepath.Join(workDir, ".git")); err != nil {
+		return "错误：当前代码空间不是 git 仓库（未找到 .git 目录）"
+	}
+	if path != "" {
+		clean := filepath.Clean(path)
+		if filepath.IsAbs(clean) || strings.HasPrefix(clean, "..") {
+			return "错误：路径必须是项目内的相对路径"
+		}
+		path = clean
+	}
+	withPath := func(base ...string) []string {
+		if path != "" {
+			return append(base, "--", path)
+		}
+		return base
+	}
+
+	var sb strings.Builder
+
+	// 新增未跟踪文件（git diff 不会体现，单独从 status 里列出）
+	statusOut, _ := runGit(ctx, workDir, withPath("status", "--porcelain")...)
+	var untracked []string
+	for _, line := range strings.Split(statusOut, "\n") {
+		if strings.HasPrefix(line, "??") {
+			untracked = append(untracked, strings.TrimSpace(strings.TrimPrefix(line, "??")))
+		}
+	}
+	if len(untracked) > 0 {
+		sb.WriteString("# 新增未跟踪文件：\n")
+		for _, f := range untracked {
+			sb.WriteString("+ " + f + "\n")
+		}
+		sb.WriteString("\n")
+	}
+
+	if _, err := runGit(ctx, workDir, "rev-parse", "--verify", "HEAD"); err == nil {
+		// 仓库已有提交：一次 diff HEAD 覆盖 staged + unstaged
+		out, err := runGit(ctx, workDir, withPath("diff", "HEAD")...)
+		if err != nil {
+			return "错误：git diff 执行失败：" + err.Error()
+		}
+		sb.WriteString(out)
+	} else {
+		// 全新仓库尚无提交
+		cached, _ := runGit(ctx, workDir, withPath("diff", "--cached")...)
+		unstaged, _ := runGit(ctx, workDir, withPath("diff")...)
+		if strings.TrimSpace(cached) != "" {
+			sb.WriteString("# 已 add 的改动：\n")
+			sb.WriteString(cached)
+			sb.WriteString("\n")
+		}
+		if strings.TrimSpace(unstaged) != "" {
+			sb.WriteString("# 未 add 的改动：\n")
+			sb.WriteString(unstaged)
+		}
+	}
+
+	result := strings.TrimSpace(sb.String())
+	if result == "" {
+		return "无未提交的改动（工作区干净）。"
+	}
+	return truncateText(result, maxToolOutput)
 }
